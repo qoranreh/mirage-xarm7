@@ -13,6 +13,6 @@ xarm_state_monitor:
       - joint6
       - joint7
     gripper_joint_name: drive_joint
-    tf_wait_timeout_sec: 0.2
+    tf_wait_timeout_sec: 0.5
     arm_stale_timeout_sec: 0.1
     gripper_stale_timeout_sec: 0.3

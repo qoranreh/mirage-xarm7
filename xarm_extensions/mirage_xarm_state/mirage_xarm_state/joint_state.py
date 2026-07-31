@@ -25,6 +25,7 @@ class NormalizationResult:
     missing_names: Tuple[str, ...]
     nonfinite_fields: Tuple[str, ...]
     issues: Tuple[str, ...]
+    omitted_optional_fields: Tuple[str, ...] = ()
 
     @property
     def valid(self) -> bool:
@@ -79,14 +80,9 @@ def normalize_joint_state(
         missing = ()
 
     nonfinite: List[str] = []
-    for field_name, values in (
-        ('position', view.position),
-        ('velocity', view.velocity),
-        ('effort', view.effort),
-    ):
-        for name in names:
-            if name in values and not math.isfinite(values[name]):
-                nonfinite.append(f'{field_name}:{name}')
+    for name in names:
+        if name in view.position and not math.isfinite(view.position[name]):
+            nonfinite.append(f'position:{name}')
 
     fatal_issues = bool(view.issues) or bool(missing) or bool(nonfinite)
     if fatal_issues:
@@ -102,9 +98,25 @@ def normalize_joint_state(
     elif all(name in view.position for name in names):
         normalized.position = [view.position[name] for name in names]
 
-    if all(name in view.velocity for name in names):
-        normalized.velocity = [view.velocity[name] for name in names]
-    if all(name in view.effort for name in names):
-        normalized.effort = [view.effort[name] for name in names]
+    omitted_optional_fields: List[str] = []
+    for field_name, values in (
+        ('velocity', view.velocity),
+        ('effort', view.effort),
+    ):
+        if not values:
+            continue
+        if all(
+            name in values and math.isfinite(values[name])
+            for name in names
+        ):
+            setattr(normalized, field_name, [values[name] for name in names])
+        else:
+            omitted_optional_fields.append(field_name)
 
-    return NormalizationResult(normalized, (), (), ())
+    return NormalizationResult(
+        normalized,
+        (),
+        (),
+        (),
+        omitted_optional_fields=tuple(omitted_optional_fields),
+    )

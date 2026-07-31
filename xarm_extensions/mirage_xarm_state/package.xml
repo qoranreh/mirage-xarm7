@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>mirage_xarm_state</name>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
   <description>Timestamp-aligned xArm joint, end-effector, gripper, and diagnostic state recorder.</description>
   <maintainer email="qoranreh@example.com">qoranreh</maintainer>
   <license>Apache-2.0</license>

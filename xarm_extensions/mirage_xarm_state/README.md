@@ -36,3 +36,8 @@ Normalized outputs are:
 The raw joint/TF/robot inputs and all normalized outputs are included in each
 bag. `drive_joint` is kept in its native radian representation; conversion to
 physical finger width is intentionally out of scope for this package.
+
+`position` is required and must be finite. `velocity` and `effort` are optional:
+if a fake or real driver publishes non-finite values for either optional field,
+the monitor omits only that field and reports it in diagnostics instead of
+discarding the valid joint position sample.

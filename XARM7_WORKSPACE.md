@@ -24,9 +24,15 @@ On 2026-07-31, the copied Linux workspace passed `pip check`, CUDA and EGL
 device checks, and a 50-step Panda-to-UR5e low-dimensional robosuite smoke
 run. The ROS package unit suite passed eight tests in its active workspace.
 
-## Known xArm integration limitation
+## Verified xArm fake-hardware integration
 
-The current fake-hardware integration can supply non-finite optional effort
-values. The state normalizer rejects those samples, so normalized output may
-remain empty even though the unit tests pass. Treat the package as backed up
-and testable, but not yet validated for experiment recording on xArm7.
+On 2026-07-31, the State adapter was fixed and revalidated against the xArm7
+fake hardware. Non-finite optional effort values are omitted while valid joint
+positions and velocities continue through the pipeline. Arm state, gripper
+state, timestamp-matched end-effector pose, and diagnostics all published with
+healthy status. The package exits cleanly when ROS is already shutting down.
+
+A 14.5-second rosbag check recorded 8,998 messages across the raw and
+normalized topics and produced both the SQLite database and `metadata.yaml`.
+The active workspace passed all 13 package tests. Actual xArm7 hardware remains
+unverified and must be tested separately with low-speed safety limits.

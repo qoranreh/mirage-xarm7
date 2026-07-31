@@ -80,14 +80,25 @@ def test_mismatched_array_length_is_rejected():
     assert 'position length 6 does not match name length 7' in result.issues
 
 
-def test_nonfinite_position_velocity_and_effort_are_rejected():
+def test_nonfinite_position_is_rejected():
+    positions = [0.0] * 7
+    positions[3] = math.nan
+    message = make_message(ARM_NAMES, positions)
+
+    result = normalize_joint_state(
+        message, parse_joint_state(message), ARM_NAMES
+    )
+
+    assert not result.valid
+    assert result.nonfinite_fields == ('position:joint4',)
+
+
+def test_nonfinite_optional_fields_are_omitted():
     parameter_names = {
-        'position': 'positions',
         'velocity': 'velocities',
         'effort': 'efforts',
     }
     for field_name, bad_value in (
-        ('position', math.nan),
         ('velocity', math.inf),
         ('effort', -math.inf),
     ):
@@ -105,8 +116,11 @@ def test_nonfinite_position_velocity_and_effort_are_rejected():
             message, parse_joint_state(message), ARM_NAMES
         )
 
-        assert not result.valid
-        assert result.nonfinite_fields == (f'{field_name}:joint4',)
+        assert result.valid
+        assert result.omitted_optional_fields == (field_name,)
+        assert not getattr(result.message, field_name)
+        retained_field = 'effort' if field_name == 'velocity' else 'velocity'
+        assert tuple(getattr(result.message, retained_field)) == (0.0,) * 7
 
 
 def test_absent_optional_arrays_remain_absent():
@@ -117,5 +131,6 @@ def test_absent_optional_arrays_remain_absent():
     )
 
     assert result.valid
+    assert not result.omitted_optional_fields
     assert not result.message.velocity
     assert not result.message.effort

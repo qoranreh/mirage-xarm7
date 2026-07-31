@@ -10,6 +10,7 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import PoseStamped
 import rclpy
 from rclpy.duration import Duration
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
@@ -28,6 +29,7 @@ from mirage_xarm_state.joint_state import (
 class PendingArmSample:
     message: JointState
     enqueued_monotonic: float
+    omitted_optional_fields: tuple[str, ...]
 
 
 class XArmStateMonitor(Node):
@@ -44,7 +46,7 @@ class XArmStateMonitor(Node):
             'arm_joint_names', [f'joint{index}' for index in range(1, 8)]
         )
         self.declare_parameter('gripper_joint_name', 'drive_joint')
-        self.declare_parameter('tf_wait_timeout_sec', 0.2)
+        self.declare_parameter('tf_wait_timeout_sec', 0.5)
         self.declare_parameter('arm_stale_timeout_sec', 0.1)
         self.declare_parameter('gripper_stale_timeout_sec', 0.3)
 
@@ -106,6 +108,8 @@ class XArmStateMonitor(Node):
         self._last_arm_issue = 'no arm sample received'
         self._last_gripper_issue = 'no gripper sample received'
         self._last_missing_arm: tuple[str, ...] = ()
+        self._last_arm_optional_fields: tuple[str, ...] = ()
+        self._last_gripper_optional_fields: tuple[str, ...] = ()
         self._last_robot: Optional[RobotMsg] = None
         self._joint_input_issue = 'none'
 
@@ -113,7 +117,10 @@ class XArmStateMonitor(Node):
         self._arm_published = 0
         self._gripper_received = 0
         self._gripper_published = 0
+        self._tf_ready = False
+        self._tf_warmup_drops = 0
         self._tf_failures = 0
+        self._tf_consecutive_failures = 0
         self._malformed_messages = 0
         self._out_of_order_messages = 0
 
@@ -156,6 +163,17 @@ class XArmStateMonitor(Node):
             parts.append('non-finite: ' + ', '.join(result.nonfinite_fields))
         parts.extend(result.issues)
         return '; '.join(parts) if parts else 'invalid joint state'
+
+    @staticmethod
+    def _normalization_success(
+        omitted_optional_fields: tuple[str, ...],
+    ) -> str:
+        if not omitted_optional_fields:
+            return 'ok'
+        return (
+            'ok; omitted optional fields: '
+            + ', '.join(omitted_optional_fields)
+        )
 
     def _timestamp_is_usable(
         self, stamp_ns: int, previous_ns: Optional[int], source: str
@@ -200,6 +218,7 @@ class XArmStateMonitor(Node):
         result = normalize_joint_state(
             message, view, (self._gripper_joint_name,)
         )
+        self._last_gripper_optional_fields = result.omitted_optional_fields
         if not result.valid:
             self._gripper_valid = False
             self._last_gripper_issue = self._normalization_issue(result)
@@ -221,13 +240,16 @@ class XArmStateMonitor(Node):
         self._gripper_publisher.publish(result.message)
         self._gripper_published += 1
         self._gripper_valid = True
-        self._last_gripper_issue = 'ok'
+        self._last_gripper_issue = self._normalization_success(
+            result.omitted_optional_fields
+        )
 
     def _handle_arm(self, message: JointState, view) -> None:
         self._arm_received += 1
         stamp_ns = self._stamp_ns(message)
         result = normalize_joint_state(message, view, self._arm_joint_names)
         self._last_missing_arm = result.missing_names
+        self._last_arm_optional_fields = result.omitted_optional_fields
         if not result.valid:
             self._arm_valid = False
             self._last_arm_issue = self._normalization_issue(result)
@@ -247,7 +269,11 @@ class XArmStateMonitor(Node):
             return
 
         self._pending_arm.append(
-            PendingArmSample(result.message, time.monotonic())
+            PendingArmSample(
+                result.message,
+                time.monotonic(),
+                result.omitted_optional_fields,
+            )
         )
         self._arm_valid = True
         self._last_arm_issue = 'waiting for same-time TF'
@@ -272,13 +298,21 @@ class XArmStateMonitor(Node):
                 if elapsed < self._tf_wait_timeout_sec:
                     still_pending.append(pending)
                     continue
-                self._tf_failures += 1
+                if self._tf_ready:
+                    self._tf_failures += 1
+                    self._tf_consecutive_failures += 1
+                    issue_prefix = 'same-time TF unavailable'
+                else:
+                    self._tf_warmup_drops += 1
+                    issue_prefix = 'waiting for initial same-time TF'
                 self._arm_valid = False
                 self._last_arm_issue = (
-                    f'same-time TF unavailable after {elapsed:.3f}s: {error}'
+                    f'{issue_prefix} after {elapsed:.3f}s: {error}'
                 )
                 continue
 
+            self._tf_ready = True
+            self._tf_consecutive_failures = 0
             pose = PoseStamped()
             pose.header.stamp = pending.message.header.stamp
             pose.header.frame_id = self._base_frame
@@ -290,7 +324,10 @@ class XArmStateMonitor(Node):
             self._pose_publisher.publish(pose)
             self._arm_published += 1
             self._arm_valid = True
-            self._last_arm_issue = 'ok'
+            self._last_arm_optional_fields = pending.omitted_optional_fields
+            self._last_arm_issue = self._normalization_success(
+                pending.omitted_optional_fields
+            )
 
         self._pending_arm = still_pending
 
@@ -330,6 +367,10 @@ class XArmStateMonitor(Node):
                     ('received', self._arm_received),
                     ('published', self._arm_published),
                     ('missing_joints', ','.join(self._last_missing_arm)),
+                    (
+                        'omitted_optional_fields',
+                        ','.join(self._last_arm_optional_fields),
+                    ),
                     ('joint_order', ','.join(self._arm_joint_names)),
                 )
             ),
@@ -354,6 +395,10 @@ class XArmStateMonitor(Node):
                     ('age_sec', 'unknown' if age is None else f'{age:.6f}'),
                     ('received', self._gripper_received),
                     ('published', self._gripper_published),
+                    (
+                        'omitted_optional_fields',
+                        ','.join(self._last_gripper_optional_fields),
+                    ),
                     ('joint_name', self._gripper_joint_name),
                 )
             ),
@@ -364,24 +409,47 @@ class XArmStateMonitor(Node):
         success_ratio = (
             self._arm_published / completed if completed else math.nan
         )
-        level = (
-            DiagnosticStatus.WARN
-            if self._tf_failures
-            else DiagnosticStatus.OK
-        )
+        if not self._tf_ready:
+            level = DiagnosticStatus.WARN
+            message = 'waiting for first same-time TF'
+        elif self._tf_consecutive_failures:
+            level = DiagnosticStatus.WARN
+            message = (
+                f'{self._tf_consecutive_failures} consecutive TF lookup '
+                'failures detected'
+            )
+        elif self._tf_failures:
+            level = DiagnosticStatus.OK
+            message = (
+                f'ok; {self._tf_failures} isolated TF samples missed '
+                'after startup'
+            )
+        elif self._tf_warmup_drops:
+            level = DiagnosticStatus.OK
+            message = (
+                f'ok; skipped {self._tf_warmup_drops} startup samples '
+                'before TF was ready'
+            )
+        else:
+            level = DiagnosticStatus.OK
+            message = 'ok'
         return DiagnosticStatus(
             level=level,
             name='mirage_xarm_state/tf',
-            message=(
-                'TF lookup failures detected' if self._tf_failures else 'ok'
-            ),
+            message=message,
             hardware_id='xarm',
             values=self._values(
                 (
                     ('base_frame', self._base_frame),
                     ('ee_frame', self._ee_frame),
+                    ('ready', self._tf_ready),
                     ('pending', len(self._pending_arm)),
+                    ('warmup_drops', self._tf_warmup_drops),
                     ('failures', self._tf_failures),
+                    (
+                        'consecutive_failures',
+                        self._tf_consecutive_failures,
+                    ),
                     (
                         'success_ratio',
                         'unknown' if math.isnan(success_ratio)
@@ -464,8 +532,11 @@ def main(args=None) -> None:
     node = XArmStateMonitor()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except RuntimeError:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
