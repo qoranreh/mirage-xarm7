@@ -38,3 +38,9 @@ __pycache__
 mirage/mirage/ros_ws/build/*
 mirage/mirage/ros_ws/install/*
 mirage/mirage/ros_ws/log/*
+
+# Machine-local development state
+.venv/
+mirage/mirage/benchmark/robosuite/config/local_smoke.yaml
+mirage/mirage/benchmark/robosuite/results/
+recordings/
