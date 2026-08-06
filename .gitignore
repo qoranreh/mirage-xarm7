@@ -41,6 +41,9 @@ mirage/mirage/ros_ws/log/*
 
 # Machine-local development state
 .venv/
+/log/
 mirage/mirage/benchmark/robosuite/config/local_smoke.yaml
 mirage/mirage/benchmark/robosuite/results/
 recordings/
+xarm_extensions/mirage_xarm_state/config/*.local.yaml
+xarm_extensions/mirage_xarm_state/reports/

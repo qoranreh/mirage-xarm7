@@ -1,0 +1,29 @@
+version: 2
+# Initial physical smoke gates. Use 0.002 m and 0.008726646259971648 rad
+# for the strict pre-controller calibration.
+physical_position_tolerance_m: 0.005
+physical_orientation_tolerance_rad: 0.017453292519943295
+# Numerical inversion is checked independently from physical measurement error.
+round_trip_position_tolerance_m: 1.0e-9
+round_trip_orientation_tolerance_rad: 1.0e-8
+vector_angular_tolerance_rad: 0.017453292519943295
+pose_cases:
+  - name: placeholder_origin
+    source:
+      frame_id: panda_sim_world
+      position_m: [0.0, 0.0, 0.0]
+      quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+    expected_target:
+      frame_id: link_base
+      position_m: [0.0, 0.0, 0.0]
+      quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+axis_cases:
+  - name: placeholder_x_axis
+    source_vector: [1.0, 0.0, 0.0]
+    expected_target_vector: [1.0, 0.0, 0.0]
+  - name: placeholder_y_axis
+    source_vector: [0.0, 1.0, 0.0]
+    expected_target_vector: [0.0, 1.0, 0.0]
+  - name: placeholder_z_axis
+    source_vector: [0.0, 0.0, 1.0]
+    expected_target_vector: [0.0, 0.0, 1.0]

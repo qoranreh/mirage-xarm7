@@ -2,6 +2,13 @@ mirage.egg-info
 meshes
 obj_meshes
 
+# Versioned official xArm7 simulation assets (see root REMOTE_CHANGES.md)
+!mirage/benchmark/robosuite/xarm_transfer/assets/robots/xarm7/meshes/
+!mirage/benchmark/robosuite/xarm_transfer/assets/robots/xarm7/meshes/*.stl
+!mirage/benchmark/robosuite/xarm_transfer/assets/grippers/meshes/
+!mirage/benchmark/robosuite/xarm_transfer/assets/grippers/meshes/xarm7_gripper/
+!mirage/benchmark/robosuite/xarm_transfer/assets/grippers/meshes/xarm7_gripper/*.stl
+
 # imgs and point clouds
 *.jpg
 *.pcd

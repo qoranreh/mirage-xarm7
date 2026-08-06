@@ -11,6 +11,7 @@ from launch.actions import (
     LogInfo,
     OpaqueFunction,
 )
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -26,6 +27,8 @@ RECORDED_TOPICS = (
     '/mirage/xarm/ee_pose',
     '/mirage/xarm/gripper_joint_state',
     '/mirage/xarm/state_diagnostics',
+    '/mirage/xarm/gate_a_report',
+    '/mirage/canonical_state',
 )
 
 
@@ -87,6 +90,11 @@ def generate_launch_description() -> LaunchDescription:
                 description='Start ros2 bag record alongside the monitor.',
             ),
             DeclareLaunchArgument(
+                'publish_canonical',
+                default_value='false',
+                description='Publish read-only /mirage/canonical_state.',
+            ),
+            DeclareLaunchArgument(
                 'recordings_dir',
                 default_value='~/Mirage_xarm_ws/recordings',
                 description='Parent directory for xArm state bags.',
@@ -109,6 +117,23 @@ def generate_launch_description() -> LaunchDescription:
                             value_type=bool,
                         )
                     },
+                ],
+            ),
+            Node(
+                package='mirage_xarm_state',
+                executable='xarm_canonical_state',
+                name='xarm_canonical_state',
+                output='screen',
+                condition=IfCondition(
+                    LaunchConfiguration('publish_canonical')
+                ),
+                parameters=[
+                    {
+                        'use_sim_time': ParameterValue(
+                            LaunchConfiguration('use_sim_time'),
+                            value_type=bool,
+                        )
+                    }
                 ],
             ),
             OpaqueFunction(function=_make_recorder),

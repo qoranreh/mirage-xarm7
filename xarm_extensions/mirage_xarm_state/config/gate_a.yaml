@@ -1,0 +1,41 @@
+xarm_gate_a_validator:
+  ros__parameters:
+    duration_sec: 30.0
+    base_frame: link_base
+    ee_frame: link_eef
+    arm_joint_names:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
+      - joint7
+    min_arm_samples: 20
+    min_pose_samples: 20
+    min_gripper_samples: 2
+    min_robot_samples: 2
+    min_arm_rate_hz: 8.0
+    min_pose_rate_hz: 8.0
+    min_gripper_rate_hz: 1.0
+    min_robot_rate_hz: 1.0
+    max_arm_gap_sec: 0.2
+    max_pose_gap_sec: 0.2
+    max_gripper_gap_sec: 1.5
+    max_robot_gap_sec: 1.0
+    max_message_age_sec: 0.5
+    min_stamp_pair_ratio: 0.95
+    min_tf_success_ratio: 0.95
+    quaternion_norm_tolerance: 0.01
+    tf_position_tolerance_m: 0.00001
+    tf_orientation_tolerance_rad: 0.0001
+    moveit_position_tolerance_m: 0.0001
+    moveit_orientation_tolerance_rad: 0.001
+    require_gripper: true
+    require_robot_state: false
+    require_motion: false
+    minimum_joint_travel_rad: 0.001
+    check_moveit_fk: true
+    require_moveit_fk: false
+    moveit_fk_service: /compute_fk
+    moveit_fk_timeout_sec: 2.0

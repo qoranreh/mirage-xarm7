@@ -1,0 +1,7 @@
+version: 1
+# Measure link_eef -> pointer tip before enabling this file.
+calibrated: false
+parent_frame: link_eef
+tool_frame: calibration_tip
+translation_m: [0.0, 0.0, 0.0]
+rotation_xyzw: [0.0, 0.0, 0.0, 1.0]

@@ -1,0 +1,73 @@
+version: 1
+scope: simulation_only
+
+source:
+  embodiment: franka_emika_panda
+  robosuite_robot_id: Panda
+  frame_id: panda_sim_world
+  environment: PickPlaceCan
+  controller: OSC_POSE
+  control_delta: true
+  policy_rate_hz: 20
+  position_scale_m: [0.05, 0.05, 0.05]
+  orientation_scale_rad: [0.5, 0.5, 0.5]
+
+target:
+  embodiment: xarm7
+  robosuite_robot_id: XArm7
+  frame_id: xarm7_sim_world
+  controller: OSC_POSE
+  absolute_blocking: true
+  position_tolerance_m: 0.025
+  orientation_tolerance_rad: 0.10471975511965977
+  contact_position_tolerance_m: 0.030
+  settling_iterations: 4
+  outer_loop_position_gain: 1.0
+  max_outer_loop_position_correction_m: 0.030
+  outer_loop_orientation_gain: 0.5
+  max_outer_loop_orientation_correction_rad: 0.08726646259971647
+  max_iterations: 300
+  timeout_sec: 2.0
+
+simulation_transform:
+  version: 2
+  kind: simulation_only
+  calibrated: false
+  task_frame_transform:
+    source_frame: panda_sim_world
+    target_frame: xarm7_sim_world
+    translation_m: [0.0, 0.0, 0.0]
+    rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+    provenance: shared_pick_place_can_task_world
+  tool_frame_correction:
+    source_tool_frame: panda_grip_site
+    target_tool_frame: xarm7_grip_site
+    translation_m: [0.0, 0.0, 0.0]
+    rotation_xyzw: [0.0, 0.0, -0.7071067811865476, 0.7071067811865476]
+    provenance: nominal_panda_to_xarm7_grip_axis
+
+safety:
+  workspace_min_m: [-0.65, -0.60, 0.40]
+  workspace_max_m: [0.35, 0.60, 1.35]
+  joint_limits_from_model: true
+  joint_limit_margin_rad: 0.01
+  max_command_age_sec: 0.15
+  max_future_skew_sec: 0.02
+  max_prediction_position_error_m: 0.03
+  max_prediction_orientation_error_rad: 0.17453292519943295
+
+forward_dynamics:
+  mode: online_oracle
+  # To switch providers, use both lines below. The artifact must be a validated
+  # Ridge model produced by the training CLI.
+  # mode: learned_ridge
+  # model_path: results/xarm_transfer/ridge_forward_dynamics.npz
+
+rollout:
+  seeds: [0, 1, 2]
+  steps: 50
+  report_path: results/xarm_transfer/xarm_rollout_report.json
+
+hardware:
+  enabled: false
+  ros_commands_allowed: false

@@ -1,0 +1,18 @@
+xarm_canonical_state:
+  ros__parameters:
+    pose_topic: /mirage/xarm/ee_pose
+    gripper_topic: /mirage/xarm/gripper_joint_state
+    object_topic: /mirage/object_state
+    output_topic: /mirage/canonical_state
+    gripper_joint_name: drive_joint
+    source_robot: xarm7
+    expected_frame_id: link_base
+    max_pose_age_sec: 0.15
+    max_gripper_age_sec: 0.30
+    max_object_age_sec: 0.30
+    max_component_skew_sec: 0.10
+    open_angle_rad: 0.0
+    closed_angle_rad: 0.85
+    open_width_m: 0.085
+    closed_width_m: 0.0
+    angle_tolerance_rad: 0.02
