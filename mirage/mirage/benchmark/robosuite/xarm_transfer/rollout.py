@@ -32,6 +32,16 @@ class RolloutError(RuntimeError):
     """Raised when an online or learned rollout violates its contract."""
 
 
+def _optional_task_success(adapter: object) -> bool:
+    checker = getattr(adapter, "task_succeeded", None)
+    if not callable(checker):
+        return False
+    result = checker()
+    if not isinstance(result, (bool, np.bool_)):
+        raise RolloutError("task success check did not return a bool")
+    return bool(result)
+
+
 @dataclass(frozen=True)
 class TransferStepMetrics:
     episode_id: str
@@ -50,6 +60,8 @@ class TransferStepMetrics:
     dynamics_latency_ms: float
     controller_latency_ms: float
     controller_contact_tolerance_used: bool
+    source_task_succeeded: bool
+    target_task_succeeded: bool
 
 
 @dataclass(frozen=True)
@@ -64,6 +76,10 @@ class TransferRolloutReport:
     iteration_limit_count: int
     rejected_command_count: int
     contact_tolerance_count: int
+    source_task_succeeded: bool
+    target_task_succeeded: bool
+    source_success_step: int | None
+    target_success_step: int | None
     position_error_mean_m: float
     position_error_max_m: float
     orientation_error_mean_rad: float
@@ -87,6 +103,10 @@ def _summarize(
     transform: SimulationTransform,
     steps: Sequence[TransferStepMetrics],
 ) -> TransferRolloutReport:
+    source_success_steps = [item.step_id + 1 for item in steps if item.source_task_succeeded]
+    target_success_steps = [item.step_id + 1 for item in steps if item.target_task_succeeded]
+    source_task_succeeded = bool(source_success_steps)
+    target_task_succeeded = bool(target_success_steps)
     position = np.asarray(
         [item.target_position_error_m for item in steps], dtype=np.float64
     )
@@ -112,8 +132,11 @@ def _summarize(
         requested_steps=requested_steps,
         completed_steps=len(steps),
         completed=(
-            len(steps) == requested_steps
-            and all(item.controller_succeeded for item in steps)
+            all(item.controller_succeeded for item in steps)
+            and (
+                len(steps) == requested_steps
+                or target_task_succeeded
+            )
         ),
         timeout_count=sum(item.controller_timed_out for item in steps),
         iteration_limit_count=sum(
@@ -123,6 +146,10 @@ def _summarize(
         contact_tolerance_count=sum(
             item.controller_contact_tolerance_used for item in steps
         ),
+        source_task_succeeded=source_task_succeeded,
+        target_task_succeeded=target_task_succeeded,
+        source_success_step=(source_success_steps[0] if source_success_steps else None),
+        target_success_step=(target_success_steps[0] if target_success_steps else None),
         position_error_mean_m=float(np.mean(position)) if position.size else 0.0,
         position_error_max_m=float(np.max(position)) if position.size else 0.0,
         orientation_error_mean_rad=(
@@ -157,6 +184,7 @@ def run_online_oracle_episode(
     controller: AbsoluteBlockingController,
     seed: int,
     steps: int = 50,
+    terminate_on_success: bool = False,
 ) -> tuple[TransitionDataset, TransferRolloutReport]:
     """Run policy -> one Panda step -> simulation T_TS -> blocking xArm."""
 
@@ -197,6 +225,8 @@ def run_online_oracle_episode(
                 result.orientation_error_bound_rad,
             ),
         )
+        source_task_succeeded = source_runtime.task_succeeded()
+        target_task_succeeded = target_adapter.task_succeeded()
         step_metrics.append(
             TransferStepMetrics(
                 episode_id,
@@ -215,9 +245,13 @@ def run_online_oracle_episode(
                 result.latency_ns / 1e6,
                 control_result.latency_sec * 1e3,
                 control_result.contact_tolerance_used,
+                source_task_succeeded,
+                target_task_succeeded,
             )
         )
         if not control_result.succeeded:
+            break
+        if terminate_on_success and (source_task_succeeded or target_task_succeeded):
             break
     return TransitionDataset(transitions), _summarize(
         mode="online_oracle",
@@ -297,6 +331,7 @@ def run_learned_replay_episode(
                 result.orientation_error_bound_rad,
             ),
         )
+        target_task_succeeded = _optional_task_success(target_adapter)
         step_metrics.append(
             TransferStepMetrics(
                 episode_id,
@@ -315,6 +350,8 @@ def run_learned_replay_episode(
                 result.latency_ns / 1e6,
                 control_result.latency_sec * 1e3,
                 control_result.contact_tolerance_used,
+                False,
+                target_task_succeeded,
             )
         )
         if not control_result.succeeded:

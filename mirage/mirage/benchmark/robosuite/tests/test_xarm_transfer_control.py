@@ -32,8 +32,12 @@ def source_pose(position=(0.0, 0.0, 0.8), timestamp=NOW_NS - 1_000_000):
     return CartesianPose(position, (0.0, 0.0, 0.0, 1.0), SOURCE_FRAME, timestamp)
 
 
-def target_pose(position=(0.0, 0.0, 0.8), timestamp=NOW_NS - 1_000_000):
-    return CartesianPose(position, (0.0, 0.0, 0.0, 1.0), TARGET_FRAME, timestamp)
+def target_pose(
+    position=(0.0, 0.0, 0.8),
+    quaternion=(0.0, 0.0, 0.0, 1.0),
+    timestamp=NOW_NS - 1_000_000,
+):
+    return CartesianPose(position, quaternion, TARGET_FRAME, timestamp)
 
 
 def desired(position=(0.1, 0.0, 0.8), action_timestamp=NOW_NS - 1_000_000):
@@ -166,7 +170,15 @@ def test_gripper_mapping_has_explicit_simulation_semantics():
 
 
 class FakeAdapter:
-    def __init__(self, *, converge=True, contact=False, contact_residual_m=None):
+    def __init__(
+        self,
+        *,
+        converge=True,
+        contact=False,
+        contact_residual_m=None,
+        contact_residual_orientation_rad=0.0,
+        task_success=False,
+    ):
         self.pose = target_pose((0.0, 0.0, 0.8))
         self.joints = np.zeros(7)
         self.absolute_mode_calls = 0
@@ -174,6 +186,8 @@ class FakeAdapter:
         self.converge = converge
         self.contact = contact
         self.contact_residual_m = contact_residual_m
+        self.contact_residual_orientation_rad = contact_residual_orientation_rad
+        self.task_success = task_success
 
     def set_absolute_mode(self):
         self.absolute_mode_calls += 1
@@ -187,12 +201,17 @@ class FakeAdapter:
     def has_gripper_task_object_contact(self):
         return self.contact
 
+    def task_succeeded(self):
+        return self.task_success
+
     def step_absolute(self, action):
         self.actions.append(action.copy())
         if self.contact_residual_m is not None:
             position = action[:3].copy()
             position[0] -= self.contact_residual_m
-            self.pose = target_pose(tuple(position))
+            half_angle = self.contact_residual_orientation_rad / 2.0
+            quaternion = (0.0, 0.0, math.sin(half_angle), math.cos(half_angle))
+            self.pose = target_pose(tuple(position), quaternion)
         elif self.converge:
             position = (
                 np.asarray(self.pose.position_m) + action[:3]
@@ -352,6 +371,7 @@ def test_contact_tolerance_requires_verified_task_object_contact():
         position_tolerance_m=0.015,
         orientation_tolerance_rad=0.01,
         contact_position_tolerance_m=0.03,
+        contact_orientation_tolerance_rad=0.02,
         max_iterations=2,
         timeout_sec=2.0,
         wall_clock_ns=lambda: NOW_NS,
@@ -373,6 +393,57 @@ def test_contact_tolerance_requires_verified_task_object_contact():
     assert not result.succeeded
     assert result.iteration_limit_reached
     assert not result.contact_tolerance_used
+
+
+def test_contact_tolerance_can_accept_orientation_only_residual():
+    adapter = FakeAdapter(
+        contact=True,
+        contact_residual_m=0.01,
+        contact_residual_orientation_rad=0.015,
+    )
+    controller = AbsoluteBlockingController(
+        adapter=adapter,
+        safety_filter=SimulationSafetyFilter(safety_limits()),
+        position_tolerance_m=0.015,
+        orientation_tolerance_rad=0.01,
+        contact_position_tolerance_m=0.03,
+        contact_orientation_tolerance_rad=0.02,
+        max_iterations=2,
+        timeout_sec=2.0,
+        wall_clock_ns=lambda: NOW_NS,
+        monotonic=lambda: 0.0,
+    )
+
+    result = controller.drive(
+        desired(), prediction_bounds=PredictionSafetyBounds(0.0, 0.0)
+    )
+
+    assert result.succeeded
+    assert result.contact_tolerance_used
+    assert result.position_error_m == pytest.approx(0.01)
+    assert result.orientation_error_rad == pytest.approx(0.015)
+
+
+def test_blocking_controller_stops_immediately_on_target_task_success():
+    adapter = FakeAdapter(converge=False, task_success=True)
+    controller = AbsoluteBlockingController(
+        adapter=adapter,
+        safety_filter=SimulationSafetyFilter(safety_limits()),
+        position_tolerance_m=0.001,
+        orientation_tolerance_rad=0.001,
+        max_iterations=20,
+        timeout_sec=2.0,
+        wall_clock_ns=lambda: NOW_NS,
+        monotonic=lambda: 0.0,
+    )
+
+    result = controller.drive(
+        desired(), prediction_bounds=PredictionSafetyBounds(0.0, 0.0)
+    )
+
+    assert result.succeeded
+    assert result.task_succeeded
+    assert result.iterations == 1
 
 
 def test_blocking_controller_reports_timeout_without_sending_after_deadline():

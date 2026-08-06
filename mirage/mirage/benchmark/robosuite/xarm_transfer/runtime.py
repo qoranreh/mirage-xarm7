@@ -23,6 +23,8 @@ TARGET_ROBOSUITE_ROBOT_ID = "XArm7"
 TARGET_FRAME_ID = "xarm7_sim_world"
 DEFAULT_XARM_WORKSPACE_MIN_M = (-0.65, -0.60, 0.40)
 DEFAULT_XARM_WORKSPACE_MAX_M = (0.35, 0.60, 1.35)
+DEFAULT_XARM_OSC_KP = np.full(6, 150.0)
+CONTACT_XARM_OSC_KP = np.asarray((300.0, 300.0, 500.0, 300.0, 300.0, 300.0))
 
 
 class RuntimeContractError(RuntimeError):
@@ -333,6 +335,15 @@ class FrankaPandaSourceRuntime:
             read_gripper_state=self.read_gripper_state,
         )
 
+    def task_succeeded(self) -> bool:
+        checker = getattr(self.core, "_check_success", None)
+        if not callable(checker):
+            raise RuntimeContractError("source environment has no success check")
+        result = checker()
+        if not isinstance(result, (bool, np.bool_)):
+            raise RuntimeContractError("source success check did not return a bool")
+        return bool(result)
+
 
 class RobosuiteXArmAbsoluteAdapter:
     """Expose an in-process xArm7 Robosuite environment to blocking control."""
@@ -379,6 +390,17 @@ class RobosuiteXArmAbsoluteAdapter:
 
     def set_absolute_mode(self) -> None:
         self.robot.controller.use_delta = False
+
+    def _configure_simulation_osc_gains(self) -> None:
+        """Use higher simulated stiffness only while carrying a task object."""
+
+        kp = (
+            CONTACT_XARM_OSC_KP
+            if self.has_gripper_task_object_contact()
+            else DEFAULT_XARM_OSC_KP
+        )
+        self.robot.controller.kp = kp.copy()
+        self.robot.controller.kd = 2.0 * np.sqrt(kp)
 
     def read_pose(self) -> CartesianPose:
         site_id = self.core.sim.model.site_name2id(self._eef_site_name)
@@ -457,6 +479,7 @@ class RobosuiteXArmAbsoluteAdapter:
             raise RuntimeContractError("xArm7 absolute action must be finite with shape (7,)")
         if self.robot.controller.use_delta is not False:
             raise RuntimeContractError("xArm7 controller is not in absolute mode")
+        self._configure_simulation_osc_gains()
         output = self.environment.step(value.copy())
         if not isinstance(output, tuple) or len(output) != 4:
             raise RuntimeContractError("target environment step returned an invalid tuple")
@@ -466,6 +489,15 @@ class RobosuiteXArmAbsoluteAdapter:
         self.observation = copy.deepcopy(observation)
         self.step_count += 1
         return output
+
+    def task_succeeded(self) -> bool:
+        checker = getattr(self.core, "_check_success", None)
+        if not callable(checker):
+            raise RuntimeContractError("target environment has no success check")
+        result = checker()
+        if not isinstance(result, (bool, np.bool_)):
+            raise RuntimeContractError("target success check did not return a bool")
+        return bool(result)
 
 
 def create_default_xarm_blocking_controller(
@@ -496,11 +528,13 @@ def create_default_xarm_blocking_controller(
         adapter=adapter,
         safety_filter=SimulationSafetyFilter(limits),
         position_tolerance_m=0.025,
-        orientation_tolerance_rad=np.deg2rad(6.0),
-        contact_position_tolerance_m=0.030,
+        orientation_tolerance_rad=np.deg2rad(7.0),
+        contact_position_tolerance_m=0.060,
+        contact_orientation_tolerance_rad=np.deg2rad(18.0),
         settling_iterations=4,
         outer_loop_position_gain=1.0,
         max_outer_loop_position_correction_m=0.030,
+        contact_max_outer_loop_position_correction_m=0.100,
         outer_loop_orientation_gain=0.5,
         max_outer_loop_orientation_correction_rad=np.deg2rad(5.0),
         max_iterations=300,

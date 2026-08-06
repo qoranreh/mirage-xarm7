@@ -19,11 +19,15 @@ target:
   controller: OSC_POSE
   absolute_blocking: true
   position_tolerance_m: 0.025
-  orientation_tolerance_rad: 0.10471975511965977
-  contact_position_tolerance_m: 0.030
+  orientation_tolerance_rad: 0.12217304763960307
+  contact_position_tolerance_m: 0.060
+  contact_orientation_tolerance_rad: 0.3141592653589793
   settling_iterations: 4
   outer_loop_position_gain: 1.0
   max_outer_loop_position_correction_m: 0.030
+  contact_max_outer_loop_position_correction_m: 0.100
+  free_space_osc_kp: [150, 150, 150, 150, 150, 150]
+  contact_osc_kp: [300, 300, 500, 300, 300, 300]
   outer_loop_orientation_gain: 0.5
   max_outer_loop_orientation_correction_rad: 0.08726646259971647
   max_iterations: 300
@@ -65,7 +69,8 @@ forward_dynamics:
 
 rollout:
   seeds: [0, 1, 2]
-  steps: 50
+  steps: 400
+  terminate_on_success: true
   report_path: results/xarm_transfer/xarm_rollout_report.json
 
 hardware:

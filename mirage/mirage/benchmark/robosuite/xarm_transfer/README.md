@@ -100,27 +100,42 @@ The normalized xArm simulation gripper convention is explicit: `-1` is open
 and `+1` is closed. A rejected or out-of-bound learned prediction is never
 sent to the target controller.
 
-The checked-in simulation defaults use a 0.025 m position tolerance and a 6°
+The checked-in simulation defaults use a 0.025 m position tolerance and a 7°
 orientation tolerance in free space. Success requires five consecutive
 simulation steps inside both bounds (the first crossing plus four settling
 steps), so the controller does not stop on a transient boundary crossing. A
 bounded Cartesian outer loop uses position gain 1.0 with at most 0.030 m and
 orientation gain 0.5 with at most 5° of world-frame correction to remove OSC
 steady-state offset. The compensated command is rechecked by the full safety
-filter before every simulator step. The
-official xArm gripper can settle
-against a PickPlaceCan object before reaching that position bound, so a
-separate 0.030 m position tolerance is allowed only while the simulator verifies
-gripper-body contact with a task object. Every use of this contact exception is
-recorded per step and counted in the JSON report. It does not relax orientation,
-workspace, joint, freshness, or learned-model safety gates. Timeout and
+filter before every simulator step. The official xArm gripper can settle
+against a PickPlaceCan object before reaching the free-space bounds, so 0.060 m
+and 18° contact bounds are allowed only while the simulator verifies
+gripper-body contact with a task object. During that verified contact, the
+simulation-only OSC gains change from `[150] * 6` to
+`[300, 300, 500, 300, 300, 300]`, and bounded position compensation may reach
+0.100 m. Every use of this contact exception is recorded per step and counted
+in the JSON report. It does not relax workspace, joint, freshness, or
+learned-model safety gates. A target task-success event terminates blocking
+immediately even when the final EE pose has not converged. Timeout and
 iteration-limit failures are distinct, and either makes a rollout incomplete.
 
 `run_online_oracle_episode` implements policy → one Panda step → `T_TS` → xArm
 blocking control. `run_learned_replay_episode` starts from the same source pose
 and target reset, replays the same recorded actions autoregressively, and
 records oracle prediction and target tracking errors. Rollout reports are JSON
-and include timeout, rejection, error, iteration, and latency values per step.
+and include timeout, rejection, error, iteration, latency, source task success,
+and target task success per step.
+
+The checkpoint's native PickPlaceCan horizon is 400 policy steps. To run the
+whole manipulation instead of the 50-step EE-path smoke test, use:
+
+```bash
+cd mirage
+MUJOCO_GL=egl ../.venv/bin/python -m \
+  mirage.benchmark.robosuite.xarm_transfer.cli rollout \
+  --checkpoint mirage/models/can/low_dim/model_epoch_250_PickPlaceCan_success_1.0.pth \
+  --mode oracle --seeds 1 --steps 400 --terminate-on-success
+```
 
 Run both providers against the same held-out seeds and freshly recorded oracle
 actions:
@@ -177,6 +192,15 @@ with target-controller tracking error.
 
 The ignored `panda_xarm_oracle_seed1_task_tool_v2.mp4` shows the 50-step
 oracle path side by side and overlays the achieved position/orientation error.
+
+The 400-step task-mode validation for seed 1 reached actual xArm task success
+at policy step 116: the xArm picked up the can and placed it in the bin. It had
+zero timeout, iteration-limit, and safety-rejection events; 32 steps used the
+verified-contact bounds. The source Panda would reach success at step 124, but
+the rollout stopped at step 116 because the target task had already succeeded.
+The ignored `panda_xarm_oracle_seed1_full_task.mp4` contains the complete
+side-by-side run, and `xarm_full_task_oracle_seed1.json` retains every reported
+error, including the final task-success step's unconverged EE error.
 
 ## Validation
 

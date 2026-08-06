@@ -74,6 +74,11 @@ def _parser() -> argparse.ArgumentParser:
     rollout.add_argument("--dataset", type=Path)
     rollout.add_argument("--seeds", type=_seeds, default=(0, 1, 2))
     rollout.add_argument("--steps", type=int, default=50)
+    rollout.add_argument(
+        "--terminate-on-success",
+        action="store_true",
+        help="stop an oracle episode when either simulation task succeeds",
+    )
     rollout.add_argument("--device", default="cpu")
     rollout.add_argument(
         "--output",
@@ -141,6 +146,7 @@ def _rollout(parsed: argparse.Namespace) -> int:
                     controller=controller,
                     seed=seed,
                     steps=parsed.steps,
+                    terminate_on_success=parsed.terminate_on_success,
                 )
                 reports.append(report)
                 oracle_records.extend(dataset.records)
@@ -155,7 +161,11 @@ def _rollout(parsed: argparse.Namespace) -> int:
                         target_adapter=target_adapter,
                         controller=controller,
                         seed=seed,
-                        steps=parsed.steps,
+                        steps=(
+                            min(parsed.steps, len(seed_records))
+                            if parsed.mode == "both" and parsed.terminate_on_success
+                            else parsed.steps
+                        ),
                     )
                 )
     finally:

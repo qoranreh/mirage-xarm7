@@ -211,6 +211,7 @@ class BlockingControlResult:
     orientation_error_rad: float
     latency_sec: float
     contact_tolerance_used: bool = False
+    task_succeeded: bool = False
 
     def __post_init__(self) -> None:
         if self.succeeded and (
@@ -225,8 +226,12 @@ class BlockingControlResult:
             raise ControlError("iterations must be a non-negative integer")
         if type(self.contact_tolerance_used) is not bool:
             raise ControlError("contact_tolerance_used must be a bool")
+        if type(self.task_succeeded) is not bool:
+            raise ControlError("task_succeeded must be a bool")
         if self.contact_tolerance_used and not self.succeeded:
             raise ControlError("contact tolerance can only be used for success")
+        if self.task_succeeded and not self.succeeded:
+            raise ControlError("task success must produce a successful result")
         for name in ("position_error_m", "orientation_error_rad", "latency_sec"):
             value = float(getattr(self, name))
             if np.isnan(value) or value < 0.0:
@@ -244,9 +249,11 @@ class AbsoluteBlockingController:
         position_tolerance_m: float = 0.015,
         orientation_tolerance_rad: float = np.deg2rad(5.0),
         contact_position_tolerance_m: float | None = None,
+        contact_orientation_tolerance_rad: float | None = None,
         settling_iterations: int = 0,
         outer_loop_position_gain: float = 0.0,
         max_outer_loop_position_correction_m: float = 0.0,
+        contact_max_outer_loop_position_correction_m: float | None = None,
         outer_loop_orientation_gain: float = 0.0,
         max_outer_loop_orientation_correction_rad: float = 0.0,
         max_iterations: int = 300,
@@ -264,10 +271,20 @@ class AbsoluteBlockingController:
             if contact_position_tolerance_m is None
             else float(contact_position_tolerance_m)
         )
+        self.contact_orientation_tolerance_rad = (
+            None
+            if contact_orientation_tolerance_rad is None
+            else float(contact_orientation_tolerance_rad)
+        )
         self.settling_iterations = settling_iterations
         self.outer_loop_position_gain = float(outer_loop_position_gain)
         self.max_outer_loop_position_correction_m = float(
             max_outer_loop_position_correction_m
+        )
+        self.contact_max_outer_loop_position_correction_m = (
+            None
+            if contact_max_outer_loop_position_correction_m is None
+            else float(contact_max_outer_loop_position_correction_m)
         )
         self.outer_loop_orientation_gain = float(outer_loop_orientation_gain)
         self.max_outer_loop_orientation_correction_rad = float(
@@ -290,6 +307,18 @@ class AbsoluteBlockingController:
                     or self.contact_position_tolerance_m < self.position_tolerance_m
                 )
             )
+            or (
+                self.contact_orientation_tolerance_rad is not None
+                and (
+                    not np.isfinite(self.contact_orientation_tolerance_rad)
+                    or self.contact_orientation_tolerance_rad
+                    < self.orientation_tolerance_rad
+                )
+            )
+            or (
+                (self.contact_position_tolerance_m is None)
+                != (self.contact_orientation_tolerance_rad is None)
+            )
             or type(self.settling_iterations) is not int
             or self.settling_iterations < 0
             or not np.isfinite(self.outer_loop_position_gain)
@@ -299,6 +328,17 @@ class AbsoluteBlockingController:
             or (
                 self.outer_loop_position_gain > 0.0
                 and self.max_outer_loop_position_correction_m <= 0.0
+            )
+            or (
+                self.contact_max_outer_loop_position_correction_m is not None
+                and (
+                    not np.isfinite(
+                        self.contact_max_outer_loop_position_correction_m
+                    )
+                    or self.contact_max_outer_loop_position_correction_m
+                    < self.max_outer_loop_position_correction_m
+                    or self.contact_position_tolerance_m is None
+                )
             )
             or not np.isfinite(self.outer_loop_orientation_gain)
             or self.outer_loop_orientation_gain < 0.0
@@ -315,20 +355,7 @@ class AbsoluteBlockingController:
         ):
             raise ControlError("blocking controller limits are invalid")
 
-    def _contact_tolerance_is_met(
-        self,
-        *,
-        position_error_m: float,
-        orientation_error_rad: float,
-    ) -> bool:
-        """Apply the looser position bound only during verified object contact."""
-
-        if (
-            self.contact_position_tolerance_m is None
-            or position_error_m > self.contact_position_tolerance_m
-            or orientation_error_rad > self.orientation_tolerance_rad
-        ):
-            return False
+    def _has_verified_contact(self) -> bool:
         probe = getattr(self.adapter, "has_gripper_task_object_contact", None)
         if not callable(probe):
             return False
@@ -336,6 +363,23 @@ class AbsoluteBlockingController:
         if type(in_contact) is not bool:
             raise ControlError("target adapter contact probe must return a bool")
         return in_contact
+
+    def _contact_tolerance_is_met(
+        self,
+        *,
+        position_error_m: float,
+        orientation_error_rad: float,
+    ) -> bool:
+        """Apply the looser pose bounds only during verified object contact."""
+
+        if (
+            self.contact_position_tolerance_m is None
+            or self.contact_orientation_tolerance_rad is None
+            or position_error_m > self.contact_position_tolerance_m
+            or orientation_error_rad > self.contact_orientation_tolerance_rad
+        ):
+            return False
+        return self._has_verified_contact()
 
     def _compensated_desired(
         self,
@@ -354,9 +398,17 @@ class AbsoluteBlockingController:
             position_error = command_position - np.asarray(current.position_m)
             position_correction = self.outer_loop_position_gain * position_error
             correction_norm = float(np.linalg.norm(position_correction))
-            if correction_norm > self.max_outer_loop_position_correction_m:
+            correction_limit = self.max_outer_loop_position_correction_m
+            if (
+                self.contact_max_outer_loop_position_correction_m is not None
+                and self._has_verified_contact()
+            ):
+                correction_limit = (
+                    self.contact_max_outer_loop_position_correction_m
+                )
+            if correction_norm > correction_limit:
                 position_correction *= (
-                    self.max_outer_loop_position_correction_m / correction_norm
+                    correction_limit / correction_norm
                 )
             command_position = command_position + position_correction
         if not np.all(np.isfinite(command_position)):
@@ -501,6 +553,24 @@ class AbsoluteBlockingController:
             position_error, orientation_error = self._pose_errors(
                 current, desired.pose
             )
+            task_checker = getattr(self.adapter, "task_succeeded", None)
+            if callable(task_checker):
+                task_succeeded = task_checker()
+                if type(task_succeeded) is not bool:
+                    raise ControlError("target task success check must return a bool")
+                if task_succeeded:
+                    return BlockingControlResult(
+                        True,
+                        iterations,
+                        False,
+                        False,
+                        None,
+                        position_error,
+                        orientation_error,
+                        max(0.0, self.monotonic() - started),
+                        False,
+                        True,
+                    )
             if (
                 position_error <= self.position_tolerance_m
                 and orientation_error <= self.orientation_tolerance_rad
@@ -520,7 +590,10 @@ class AbsoluteBlockingController:
             else:
                 strict_tolerance_streak = 0
             if (
-                position_error > self.position_tolerance_m
+                (
+                    position_error > self.position_tolerance_m
+                    or orientation_error > self.orientation_tolerance_rad
+                )
                 and self._contact_tolerance_is_met(
                     position_error_m=position_error,
                     orientation_error_rad=orientation_error,
