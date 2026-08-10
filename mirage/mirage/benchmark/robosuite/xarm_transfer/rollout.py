@@ -24,6 +24,7 @@ from .dynamics import (
     PandaOnlineOracle,
 )
 from .geometry import quaternion_angular_error_rad
+from .profiles import ObservationMode, task_profile_for_name
 from .runtime import FrankaPandaSourceRuntime, RobosuiteXArmAbsoluteAdapter
 from .simulation_transform import SimulationTransform
 
@@ -67,8 +68,11 @@ class TransferStepMetrics:
 @dataclass(frozen=True)
 class TransferRolloutReport:
     mode: str
+    task_name: str
+    observation_mode: str
     episode_id: str
     seed: int
+    native_rollout_horizon: int
     requested_steps: int
     completed_steps: int
     completed: bool
@@ -97,8 +101,11 @@ class TransferRolloutReport:
 def _summarize(
     *,
     mode: str,
+    task_name: str,
+    observation_mode: ObservationMode,
     episode_id: str,
     seed: int,
+    native_rollout_horizon: int,
     requested_steps: int,
     transform: SimulationTransform,
     steps: Sequence[TransferStepMetrics],
@@ -127,8 +134,11 @@ def _summarize(
     )
     return TransferRolloutReport(
         mode=mode,
+        task_name=task_name,
+        observation_mode=observation_mode.value,
         episode_id=episode_id,
         seed=seed,
+        native_rollout_horizon=native_rollout_horizon,
         requested_steps=requested_steps,
         completed_steps=len(steps),
         completed=(
@@ -190,18 +200,22 @@ def run_online_oracle_episode(
 
     if type(steps) is not int or steps <= 0:
         raise RolloutError("steps must be a positive integer")
+    contract = source_runtime.checkpoint_contract
+    if target_adapter.task_profile != contract.task_profile:
+        raise RolloutError("source and target task profiles do not match")
     source_runtime.reset(seed)
     target_adapter.reset(seed)
     source_home = source_runtime.read_pose()
     target_home = target_adapter.read_pose()
-    transform = SimulationTransform.for_shared_task_world(
+    transform = SimulationTransform.for_task_profile(
+        contract.task_profile,
         source_frame=source_home.frame_id,
         target_frame=target_home.frame_id,
     )
     oracle = source_runtime.make_oracle()
     if not isinstance(oracle, PandaOnlineOracle):
         raise RolloutError("online rollout requires PandaOnlineOracle")
-    episode_id = f"oracle-seed-{seed}"
+    episode_id = f"{contract.task_profile.slug}-oracle-seed-{seed}"
     transitions = []
     step_metrics = []
     for step_id in range(steps):
@@ -215,6 +229,8 @@ def run_online_oracle_episode(
                 episode_id=episode_id,
                 step_id=step_id,
                 seed=seed,
+                task_name=contract.task_name,
+                observation_mode=contract.observation_mode,
             )
         )
         target_desired = transform.transform_desired_pose(result.desired_pose)
@@ -251,12 +267,15 @@ def run_online_oracle_episode(
         )
         if not control_result.succeeded:
             break
-        if terminate_on_success and (source_task_succeeded or target_task_succeeded):
+        if terminate_on_success and target_task_succeeded:
             break
     return TransitionDataset(transitions), _summarize(
         mode="online_oracle",
+        task_name=contract.task_name,
+        observation_mode=contract.observation_mode,
         episode_id=episode_id,
         seed=seed,
+        native_rollout_horizon=contract.native_rollout_horizon,
         requested_steps=steps,
         transform=transform,
         steps=step_metrics,
@@ -284,6 +303,25 @@ def run_learned_replay_episode(
         raise RolloutError("learned replay transitions must come from one episode")
     if any(record.seed != seed for record in selected):
         raise RolloutError("learned replay seed does not match transition seed")
+    task_modes = {
+        (record.task_name, record.observation_mode) for record in selected
+    }
+    if len(task_modes) != 1:
+        raise RolloutError(
+            "learned replay must contain one task and observation mode"
+        )
+    task_name, observation_mode = task_modes.pop()
+    task_profile = task_profile_for_name(task_name)
+    if getattr(target_adapter, "task_profile", task_profile) != task_profile:
+        raise RolloutError("replay and target task profiles do not match")
+    model_task = getattr(learned_dynamics, "task_name", task_name)
+    model_mode = ObservationMode.parse(
+        getattr(learned_dynamics, "observation_mode", observation_mode)
+    )
+    if model_task != task_name or model_mode is not observation_mode:
+        raise RolloutError(
+            "learned artifact task/observation mode does not match replay"
+        )
 
     target_adapter.reset(seed)
     first = selected[0]
@@ -295,11 +333,12 @@ def run_learned_replay_episode(
         initial_time,
     )
     target_home = target_adapter.read_pose()
-    transform = SimulationTransform.for_shared_task_world(
+    transform = SimulationTransform.for_task_profile(
+        task_profile,
         source_frame=current.frame_id,
         target_frame=target_home.frame_id,
     )
-    episode_id = f"learned-replay-seed-{seed}"
+    episode_id = f"{task_profile.slug}-learned-replay-seed-{seed}"
     step_metrics = []
     for step_id, oracle_record in enumerate(selected):
         action_timestamp = max(clock_ns(), current.timestamp_ns + 1)
@@ -365,8 +404,11 @@ def run_learned_replay_episode(
         )
     return _summarize(
         mode="learned_ridge",
+        task_name=task_name,
+        observation_mode=observation_mode,
         episode_id=episode_id,
         seed=seed,
+        native_rollout_horizon=task_profile.native_horizon,
         requested_steps=steps,
         transform=transform,
         steps=step_metrics,
@@ -381,7 +423,7 @@ def write_rollout_reports(
     destination = Path(path).expanduser()
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": 1,
+        "version": 2,
         "reports": [
             {
                 **asdict(report),

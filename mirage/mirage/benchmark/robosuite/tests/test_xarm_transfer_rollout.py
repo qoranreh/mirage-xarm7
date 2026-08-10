@@ -19,13 +19,20 @@ from mirage.benchmark.robosuite.xarm_transfer.dynamics import (
     ForwardDynamics,
     ForwardDynamicsRequest,
     ForwardDynamicsResult,
+    PandaOnlineOracle,
 )
 from mirage.benchmark.robosuite.xarm_transfer.geometry import (
     rotvec_to_quaternion_xyzw,
 )
 from mirage.benchmark.robosuite.xarm_transfer.rollout import (
+    run_online_oracle_episode,
     run_learned_replay_episode,
     write_rollout_reports,
+)
+from mirage.benchmark.robosuite.xarm_transfer.profiles import (
+    CheckpointContract,
+    ObservationMode,
+    TASK_PROFILES,
 )
 
 
@@ -109,6 +116,7 @@ class PerfectXArmTarget:
         self.joints = np.zeros(7)
         self.absolute = False
         self.step_count = 0
+        self.task_profile = TASK_PROFILES["PickPlaceCan"]
 
     def reset(self, seed=None):
         self.pose = CartesianPose(
@@ -140,6 +148,72 @@ class PerfectXArmTarget:
         )
         self.step_count += 1
         return {}, 0.0, False, {}
+
+    def task_succeeded(self):
+        return False
+
+
+class SourceSucceedsFirst:
+    def __init__(self):
+        profile = TASK_PROFILES["PickPlaceCan"]
+        self.checkpoint_contract = CheckpointContract(
+            profile,
+            ObservationMode.LOW_DIM,
+            tuple(profile.low_dim_observation_shapes),
+            profile.native_horizon,
+        )
+        self.task_profile = profile
+        self.policy_step_count = 0
+        self.pose = None
+
+    @staticmethod
+    def clock_ns():
+        return time.time_ns()
+
+    def reset(self, seed):
+        self.policy_step_count = 0
+        self.pose = CartesianPose(
+            (0.0, 0.0, 0.8),
+            (0.0, 0.0, 0.0, 1.0),
+            SOURCE_FRAME,
+            time.time_ns(),
+        )
+        return {}
+
+    def read_pose(self):
+        return self.pose
+
+    def policy_action(self, *, timestamp_ns):
+        return SourceAction((0.0,) * 7, SOURCE_FRAME, timestamp_ns)
+
+    def step_policy_once(self, _action):
+        self.policy_step_count += 1
+        self.pose = CartesianPose(
+            (self.policy_step_count * 0.001, 0.0, 0.8),
+            (0.0, 0.0, 0.0, 1.0),
+            SOURCE_FRAME,
+            time.time_ns(),
+        )
+        return {}, 0.0, False, {}
+
+    @staticmethod
+    def read_gripper_state():
+        return (0.02, -0.02)
+
+    def make_oracle(self):
+        return PandaOnlineOracle(
+            step_policy_once=self.step_policy_once,
+            read_pose=self.read_pose,
+            read_gripper_state=self.read_gripper_state,
+        )
+
+    def task_succeeded(self):
+        return self.policy_step_count >= 1
+
+
+class TargetSucceedsSecond(PerfectXArmTarget):
+    def task_succeeded(self):
+        return self.step_count >= 2
 
 
 def test_learned_replay_completes_50_step_blocking_path_and_writes_report(tmp_path):
@@ -180,5 +254,52 @@ def test_learned_replay_completes_50_step_blocking_path_and_writes_report(tmp_pa
     assert report.orientation_error_max_rad <= 1e-9
     output = write_rollout_reports(tmp_path / "rollout.json", (report,))
     payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["version"] == 2
     assert payload["reports"][0]["completed_steps"] == 50
     assert len(payload["reports"][0]["steps"]) == 50
+    assert report.task_name == "PickPlaceCan"
+    assert report.observation_mode == "low_dim"
+    assert report.native_rollout_horizon == 400
+    assert report.episode_id.startswith("pick-place-can-")
+
+
+def test_terminate_on_success_waits_for_target_and_records_source_success():
+    source = SourceSucceedsFirst()
+    target = TargetSucceedsSecond()
+    safety = SimulationSafetyFilter(
+        SafetyLimits(
+            target_frame=TARGET_FRAME,
+            workspace_min_m=(-0.5, -0.5, 0.4),
+            workspace_max_m=(0.5, 0.5, 1.2),
+            joint_min_rad=(-2.0,) * 7,
+            joint_max_rad=(2.0,) * 7,
+        )
+    )
+    controller = AbsoluteBlockingController(
+        adapter=target,
+        safety_filter=safety,
+        position_tolerance_m=1e-9,
+        orientation_tolerance_rad=1e-9,
+        max_iterations=5,
+        timeout_sec=1.0,
+    )
+
+    dataset, report = run_online_oracle_episode(
+        source_runtime=source,
+        target_adapter=target,
+        controller=controller,
+        seed=7,
+        steps=5,
+        terminate_on_success=True,
+    )
+
+    assert report.completed
+    assert report.completed_steps == 2
+    assert report.source_success_step == 1
+    assert report.target_success_step == 2
+    assert source.policy_step_count == 2
+    assert len(dataset) == 2
+    assert {record.task_name for record in dataset.records} == {"PickPlaceCan"}
+    assert {record.observation_mode for record in dataset.records} == {
+        ObservationMode.LOW_DIM
+    }

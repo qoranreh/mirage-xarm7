@@ -28,6 +28,7 @@ from .geometry import (
     matrix_pose,
     pose_matrix,
 )
+from .profiles import TaskProfile
 
 
 SIMULATION_TRANSFORM_VERSION = 2
@@ -235,6 +236,34 @@ class SimulationTransform:
                 source_frame=source_frame,
                 target_frame=target_frame,
                 provenance="shared_pick_place_can_task_world",
+            ),
+            tool_frame_correction=SimulationToolFrameCorrection(
+                source_tool_frame=source_tool_frame,
+                target_tool_frame=target_tool_frame,
+                rotation_xyzw=PANDA_TO_XARM7_TOOL_QUATERNION_XYZW,
+                provenance="nominal_panda_to_xarm7_grip_axis",
+            ),
+        )
+
+    @classmethod
+    def for_task_profile(
+        cls,
+        profile: TaskProfile,
+        *,
+        source_frame: str,
+        target_frame: str,
+        source_tool_frame: str = "panda_grip_site",
+        target_tool_frame: str = "xarm7_grip_site",
+    ) -> "SimulationTransform":
+        """Build a profile-provenanced shared-world simulation transform."""
+
+        if not isinstance(profile, TaskProfile):
+            raise SimulationTransformError("profile must be a TaskProfile")
+        return cls(
+            task_frame_transform=SimulationTaskFrameTransform(
+                source_frame=source_frame,
+                target_frame=target_frame,
+                provenance=profile.task_world_provenance,
             ),
             tool_frame_correction=SimulationToolFrameCorrection(
                 source_tool_frame=source_tool_frame,

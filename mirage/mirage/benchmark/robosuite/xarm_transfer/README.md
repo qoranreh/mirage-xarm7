@@ -1,13 +1,17 @@
-# Franka Panda to xArm7 simulation transfer
+# Task-profiled Franka Panda to xArm7 simulation transfer
 
 This package implements the simulation-only state/control transfer path. The
 source is the Franka Emika Panda robot, registered by Robosuite 1.4.1 under the
 identifier `Panda`. No ROS command, service, action, hardware SDK, robot IP, or
 real calibration is used here.
 
-## Fixed contracts
+## Static task and checkpoint contracts
 
-The PickPlaceCan action layout is
+`profiles.py` resolves each checkpoint into
+`TaskProfile × ObservationMode × ForwardDynamics × TargetController`. The
+active runtime profiles are `PickPlaceCan`, `Lift`, `Square_D0`, `Stack_D0`,
+and `ThreePieceAssembly_D0`, all for low-dimensional online-oracle rollout.
+The shared action layout is
 `[dx, dy, dz, dRx, dRy, dRz, gripper]`. The policy runs at 20 Hz with
 `OSC_POSE`, `control_delta=true`, translation limits of ±0.05 m per axis, and
 rotation-vector limits of ±0.5 rad per axis. `SourceAction` retains both the
@@ -18,6 +22,26 @@ Poses use metres, XYZW quaternions, nanosecond timestamps, and explicit frame
 IDs. Quaternion normalization and sign canonicalization happen at every
 serialization boundary. The source frame is `panda_sim_world`; the target
 frame is `xarm7_sim_world`.
+
+The static registry fixes each task's native horizon, low-dimensional object
+shape, manipulated MJCF objects, transform provenance, environment registration,
+and blocking-controller profile:
+
+| Task | Object observation | Manipulated objects | Native horizon | Contact relaxation |
+|---|---:|---|---:|---|
+| PickPlaceCan | `[14]` | `Can` | 400 | verified contact: 0.060 m / 18° |
+| Lift | `[10]` | `cube` | 400 | disabled |
+| Square_D0 | `[14]` | `SquareNut` | 400 | verified contact: 0.060 m / 18° |
+| Stack_D0 | `[23]` | `cubeA` | 400 | disabled |
+| ThreePieceAssembly_D0 | `[42]` | `piece_1`, `piece_2` | 500 | verified contact: 0.060 m / 18° |
+
+Checkpoints using `image_no_proprio` or `image_proprio` are classified, but
+inference is deliberately unavailable in this phase. Both runtime factories
+fail before simulator construction with
+`image observation runtime not implemented`. Observation shapes are the
+modality source of truth, so stale `use_camera_obs=true` flags in MimicGen
+low-dimensional checkpoints are sanitized before environment construction.
+The target is always camera-free and never inherits source policy cameras.
 
 `SimulationTransform` is a separate type whose `kind` is always
 `simulation_only` and whose `calibrated` value is always false. Version 2
@@ -32,9 +56,10 @@ T_targetWorld_targetTool =
 
 The task/world term is left-multiplied and may transform Cartesian positions.
 The tool correction is right-multiplied and changes the end-effector convention
-without rotating world-frame motion directions. Panda and xArm PickPlaceCan
-use the same simulator task coordinates, so the task transform is explicitly
-identity. Their nominal gripper axes differ by -90° about local Z; that fixed
+without rotating world-frame motion directions. Panda and xArm use the same
+simulator task coordinates for all registered tasks, so the task transform is
+explicitly identity with task-specific provenance. Their nominal gripper axes
+differ by -90° about local Z; that fixed
 rotation appears only in the tool correction. Robot home poses are never used
 to infer either term. Unsafe version-1 home-alignment documents and
 configurations claiming `calibrated: true` are rejected.
@@ -52,19 +77,23 @@ cd mirage
   --device cpu
 ```
 
-The low-dimensional runtime explicitly disables cameras and offscreen
-rendering. For every transition it stores episode and step IDs, seed,
+The low-dimensional source runtime explicitly disables cameras and offscreen
+rendering, and reads Panda gripper qpos directly from simulator state rather
+than from policy observations. For every transition it stores task,
+observation mode, episode and step IDs, seed,
 timestamp, current pose, raw and clipped policy actions, scaled OSC command,
 achieved next pose, gripper states, provider, and latency. The default JSONL
-location is `mirage/benchmark/robosuite/results/xarm_transfer/`, which is
-Git-ignored.
+location is
+`mirage/benchmark/robosuite/results/xarm_transfer/<task-slug>/<observation-mode>/`,
+which is Git-ignored. Transition schema v2 records task and mode. Version-1
+records are read as `PickPlaceCan` / `low_dim` for compatibility.
 
 ## Train and compare forward dynamics
 
 ```bash
 cd mirage
 ../.venv/bin/python -m mirage.benchmark.robosuite.xarm_transfer.cli train \
-  --dataset mirage/benchmark/robosuite/results/xarm_transfer/panda_transitions.jsonl \
+  --dataset mirage/benchmark/robosuite/results/xarm_transfer/pick-place-can/low_dim/panda_transitions.jsonl \
   --group-by episode \
   --validation-fraction 0.34 \
   --split-seed 11
@@ -78,9 +107,12 @@ separate position (m) and angular orientation (rad and deg) metrics. The
 deployable artifact is always the best held-out Ridge candidate.
 
 The `.npz` model contains numeric coefficients plus strict JSON metadata; load
-does not enable pickle. Frame, dimension, finite-value, and validation-bound
-checks fail closed. `ForwardDynamicsConfig` selects either `online_oracle` or
-`learned_ridge`. A learned artifact without held-out bounds is refused.
+does not enable pickle. Ridge schema v2 stores task and observation mode in
+addition to frame, dimensions, scaling, and held-out bounds. Version-1 models
+load only as `PickPlaceCan` / `low_dim`. Rollout refuses an artifact whose
+task or mode differs from the checkpoint contract. `ForwardDynamicsConfig`
+selects either `online_oracle` or `learned_ridge`. A learned artifact without
+held-out bounds is refused. Lift Ridge training is outside this phase.
 
 ## Target control and safety
 
@@ -100,7 +132,7 @@ The normalized xArm simulation gripper convention is explicit: `-1` is open
 and `+1` is closed. A rejected or out-of-bound learned prediction is never
 sent to the target controller.
 
-The checked-in simulation defaults use a 0.025 m position tolerance and a 7°
+Both static controller profiles use a 0.025 m position tolerance and a 7°
 orientation tolerance in free space. Success requires five consecutive
 simulation steps inside both bounds (the first crossing plus four settling
 steps), so the controller does not stop on a transient boundary crossing. A
@@ -113,7 +145,11 @@ and 18° contact bounds are allowed only while the simulator verifies
 gripper-body contact with a task object. During that verified contact, the
 simulation-only OSC gains change from `[150] * 6` to
 `[300, 300, 500, 300, 300, 300]`, and bounded position compensation may reach
-0.100 m. Every use of this contact exception is recorded per step and counted
+0.100 m. This contact tolerance, correction, and gain switch apply to the
+PickPlaceCan `Can`, Square `SquareNut`, and the movable ThreePieceAssembly
+`piece_1` / `piece_2` objects. Lift and Stack always use free-space bounds and
+`[150] * 6` gains. Fixtures and distractors never enable relaxation. Every use
+of a verified-contact exception is recorded per step and counted
 in the JSON report. It does not relax workspace, joint, freshness, or
 learned-model safety gates. A target task-success event terminates blocking
 immediately even when the final EE pose has not converged. Timeout and
@@ -126,15 +162,41 @@ records oracle prediction and target tracking errors. Rollout reports are JSON
 and include timeout, rejection, error, iteration, latency, source task success,
 and target task success per step.
 
-The checkpoint's native PickPlaceCan horizon is 400 policy steps. To run the
-whole manipulation instead of the 50-step EE-path smoke test, use:
+`--terminate-on-success` observes only target xArm task success. Source Panda
+success is still recorded, but cannot stop a rollout while the target remains
+unsuccessful. Reports include task name, observation mode, native horizon, and
+requested horizon; episode IDs include the task slug.
+
+PickPlaceCan, Lift, Square, and Stack have native horizons of 400 policy steps;
+ThreePieceAssembly uses 500. Omitting `--steps` uses that native value; an
+explicit smaller value remains a smoke-test override. Example full rollouts:
 
 ```bash
 cd mirage
 MUJOCO_GL=egl ../.venv/bin/python -m \
   mirage.benchmark.robosuite.xarm_transfer.cli rollout \
   --checkpoint mirage/models/can/low_dim/model_epoch_250_PickPlaceCan_success_1.0.pth \
-  --mode oracle --seeds 1 --steps 400 --terminate-on-success
+  --mode oracle --seeds 1 --terminate-on-success
+
+MUJOCO_GL=egl ../.venv/bin/python -m \
+  mirage.benchmark.robosuite.xarm_transfer.cli rollout \
+  --checkpoint mirage/models/lift/low_dim/lift_ph_low_dim_epoch_1000_succ_100.pth \
+  --mode oracle --seeds 0,1,3,7 --terminate-on-success
+
+MUJOCO_GL=egl ../.venv/bin/python -m \
+  mirage.benchmark.robosuite.xarm_transfer.cli rollout \
+  --checkpoint mirage/models/square/low_dim/model_epoch_950_Square_D0_success_0.96.pth \
+  --mode oracle --seeds 3 --terminate-on-success
+
+MUJOCO_GL=egl ../.venv/bin/python -m \
+  mirage.benchmark.robosuite.xarm_transfer.cli rollout \
+  --checkpoint mirage/models/stack/low_dim/model_epoch_2000.pth \
+  --mode oracle --seeds 0 --terminate-on-success
+
+MUJOCO_GL=egl ../.venv/bin/python -m \
+  mirage.benchmark.robosuite.xarm_transfer.cli rollout \
+  --checkpoint mirage/models/two_piece/low_dim/model_epoch_1000_ThreePieceAssembly_D0_success_0.68.pth \
+  --mode oracle --seeds 0 --terminate-on-success
 ```
 
 Run both providers against the same held-out seeds and freshly recorded oracle
@@ -146,7 +208,7 @@ MUJOCO_GL=egl ../.venv/bin/python -m \
   mirage.benchmark.robosuite.xarm_transfer.cli rollout \
   --checkpoint mirage/models/can/low_dim/model_epoch_250_PickPlaceCan_success_1.0.pth \
   --mode both \
-  --model mirage/benchmark/robosuite/results/xarm_transfer/ridge_forward_dynamics.npz \
+  --model mirage/benchmark/robosuite/results/xarm_transfer/pick-place-can/low_dim/ridge_forward_dynamics.npz \
   --seeds 1,3 \
   --steps 50
 ```
@@ -202,14 +264,40 @@ The ignored `panda_xarm_oracle_seed1_full_task.mp4` contains the complete
 side-by-side run, and `xarm_full_task_oracle_seed1.json` retains every reported
 error, including the final task-success step's unconverged EE error.
 
+Lift full-horizon validation also used target-only early termination. All four
+seeds reached xArm success with zero timeout, iteration-limit, rejection, or
+contact-tolerance event:
+
+| Seed | Source success step | Target success step | Position max | Orientation max |
+|---:|---:|---:|---:|---:|
+| 0 | 55 | 57 | 0.01814 m | 2.614° |
+| 1 | 40 | 41 | 0.01196 m | 1.784° |
+| 3 | 49 | 50 | 0.01346 m | 2.540° |
+| 7 | 46 | 47 | 0.02069 m | 1.913° |
+
+The seed-1 result specifically proves that source success at step 40 no longer
+stops the rollout before target success at step 41. Ignored version-2 reports
+are stored below the task-aware `pick-place-can/low_dim/` and `lift/low_dim/`
+result directories.
+
+The added MimicGen profiles were validated with full native-horizon oracle
+rollouts. Square seed 3 reached target success at step 128, Stack seed 0 at
+step 101, and ThreePieceAssembly seed 0 at step 166, with zero timeout,
+iteration-limit, or safety-rejection event. Square and ThreePieceAssembly used
+verified-object contact bounds; Stack required no contact exception.
+
 ## Validation
 
 With pytest installed in the active environment:
 
 ```bash
 cd mirage
-python -m pytest -q mirage/benchmark/robosuite/tests/test_xarm_transfer_*.py
-python -m pytest -q \
+MPLCONFIGDIR=/tmp/mirage_mpl MUJOCO_GL=egl \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q \
+  --rootdir=. --import-mode=importlib \
+  mirage/benchmark/robosuite/tests/test_xarm_transfer_*.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q \
+  --rootdir=. --import-mode=importlib \
   mirage/benchmark/robosuite/tests/test_canonical_policy_checkpoint.py
 ```
 

@@ -1,16 +1,28 @@
-version: 1
+version: 2
 scope: simulation_only
+
+# Task and observation mode are resolved from checkpoint metadata. Controller
+# values come only from the reviewed static Python registry in
+# xarm_transfer/profiles.py; this YAML cannot override tolerances or gains.
+checkpoint_contract:
+  registered_tasks:
+    [PickPlaceCan, Lift, Square_D0, Stack_D0, ThreePieceAssembly_D0]
+  runtime_observation_modes: [low_dim]
+  classified_but_not_executable_modes: [image_no_proprio, image_proprio]
+  native_horizon_from_checkpoint: true
+  action_dimension: 7
+  policy_rate_hz: 20
+  controller: OSC_POSE
+  control_delta: true
+  position_scale_m: [0.05, 0.05, 0.05]
+  orientation_scale_rad: [0.5, 0.5, 0.5]
 
 source:
   embodiment: franka_emika_panda
   robosuite_robot_id: Panda
   frame_id: panda_sim_world
-  environment: PickPlaceCan
-  controller: OSC_POSE
-  control_delta: true
-  policy_rate_hz: 20
-  position_scale_m: [0.05, 0.05, 0.05]
-  orientation_scale_rad: [0.5, 0.5, 0.5]
+  low_dim_policy_cameras_disabled: true
+  gripper_state_source: simulator_qpos
 
 target:
   embodiment: xarm7
@@ -18,31 +30,14 @@ target:
   frame_id: xarm7_sim_world
   controller: OSC_POSE
   absolute_blocking: true
-  position_tolerance_m: 0.025
-  orientation_tolerance_rad: 0.12217304763960307
-  contact_position_tolerance_m: 0.060
-  contact_orientation_tolerance_rad: 0.3141592653589793
-  settling_iterations: 4
-  outer_loop_position_gain: 1.0
-  max_outer_loop_position_correction_m: 0.030
-  contact_max_outer_loop_position_correction_m: 0.100
-  free_space_osc_kp: [150, 150, 150, 150, 150, 150]
-  contact_osc_kp: [300, 300, 500, 300, 300, 300]
-  outer_loop_orientation_gain: 0.5
-  max_outer_loop_orientation_correction_rad: 0.08726646259971647
-  max_iterations: 300
-  timeout_sec: 2.0
+  policy_cameras_inherited: false
+  controller_profile_source: static_task_registry
 
 simulation_transform:
   version: 2
   kind: simulation_only
   calibrated: false
-  task_frame_transform:
-    source_frame: panda_sim_world
-    target_frame: xarm7_sim_world
-    translation_m: [0.0, 0.0, 0.0]
-    rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
-    provenance: shared_pick_place_can_task_world
+  shared_task_world_identity: true
   tool_frame_correction:
     source_tool_frame: panda_grip_site
     target_tool_frame: xarm7_grip_site
@@ -62,16 +57,19 @@ safety:
 
 forward_dynamics:
   mode: online_oracle
-  # To switch providers, use both lines below. The artifact must be a validated
-  # Ridge model produced by the training CLI.
+  # learned_ridge artifacts are currently PickPlaceCan / low_dim only and must
+  # match the checkpoint's task and observation mode.
   # mode: learned_ridge
-  # model_path: results/xarm_transfer/ridge_forward_dynamics.npz
+  # model_path: results/xarm_transfer/pick-place-can/low_dim/ridge_forward_dynamics.npz
 
 rollout:
-  seeds: [0, 1, 2]
-  steps: 400
-  terminate_on_success: true
-  report_path: results/xarm_transfer/xarm_rollout_report.json
+  seeds: [0, 1, 3, 7]
+  # Omit CLI --steps to use the checkpoint-native horizon (400 for all profiles
+  # except ThreePieceAssembly_D0, which uses 500). A smaller explicit value is
+  # a smoke-test override.
+  steps: checkpoint_native
+  terminate_on_target_success: true
+  default_result_root: results/xarm_transfer/<task-slug>/<observation-mode>/
 
 hardware:
   enabled: false

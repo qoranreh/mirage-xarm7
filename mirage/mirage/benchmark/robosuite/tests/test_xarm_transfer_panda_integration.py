@@ -52,3 +52,32 @@ def test_real_franka_panda_checkpoint_oracle_executes_one_policy_step(monkeypatc
     assert not np.allclose(
         result.current_pose.as_array(), result.desired_pose.pose.as_array()
     )
+
+    runtime.observation["robot0_gripper_qpos"][:] = np.nan
+    assert np.all(np.isfinite(runtime.read_gripper_state()))
+    runtime.core.close()
+
+
+def test_real_lift_checkpoint_oracle_executes_one_policy_step(monkeypatch):
+    monkeypatch.setenv("MPLCONFIGDIR", "/tmp/mirage_mpl")
+    checkpoint = (
+        Path(__file__).parents[3]
+        / "models"
+        / "lift"
+        / "low_dim"
+        / "lift_ph_low_dim_epoch_1000_succ_100.pth"
+    )
+    runtime = FrankaPandaSourceRuntime.from_checkpoint(checkpoint, device="cpu")
+    observation = runtime.reset(7)
+    current = runtime.read_pose()
+    action = runtime.policy_action(timestamp_ns=current.timestamp_ns + 1)
+    result = runtime.make_oracle().predict(ForwardDynamicsRequest(current, action))
+
+    assert runtime.task_profile.env_name == "Lift"
+    assert observation["object"].shape == (10,)
+    assert runtime.policy_step_count == 1
+    assert result.provider == "panda_online_oracle"
+    assert not np.allclose(
+        result.current_pose.as_array(), result.desired_pose.pose.as_array()
+    )
+    runtime.core.close()

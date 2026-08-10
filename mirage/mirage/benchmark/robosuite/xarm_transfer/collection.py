@@ -13,6 +13,7 @@ from .dataset import (
 )
 from .dynamics import ForwardDynamicsRequest
 from .runtime import FrankaPandaSourceRuntime
+from .profiles import ObservationMode, TaskProfile, TASK_PROFILES
 
 
 class CollectionError(RuntimeError):
@@ -47,7 +48,8 @@ def collect_panda_oracle_transitions(
     for seed in seed_values:
         runtime.reset(seed)
         oracle = runtime.make_oracle()
-        episode_id = f"panda-seed-{seed}"
+        contract = runtime.checkpoint_contract
+        episode_id = f"{contract.task_profile.slug}-panda-seed-{seed}"
         for step_id in range(steps_per_episode):
             current_pose = runtime.read_pose()
             action_timestamp = max(runtime.clock_ns(), current_pose.timestamp_ns + 1)
@@ -59,6 +61,8 @@ def collect_panda_oracle_transitions(
                     episode_id=episode_id,
                     step_id=step_id,
                     seed=seed,
+                    task_name=contract.task_name,
+                    observation_mode=contract.observation_mode,
                 )
             )
         if runtime.policy_step_count != steps_per_episode:
@@ -75,5 +79,16 @@ def collect_panda_oracle_transitions(
     )
 
 
-def default_artifact_directory() -> Path:
-    return Path(__file__).resolve().parents[1] / "results" / "xarm_transfer"
+def default_artifact_directory(
+    task_profile: TaskProfile | None = None,
+    observation_mode: ObservationMode | str = ObservationMode.LOW_DIM,
+) -> Path:
+    profile = task_profile or TASK_PROFILES["PickPlaceCan"]
+    mode = ObservationMode.parse(observation_mode)
+    return (
+        Path(__file__).resolve().parents[1]
+        / "results"
+        / "xarm_transfer"
+        / profile.slug
+        / mode.value
+    )

@@ -12,9 +12,12 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from .contracts import CartesianPose, ScaledOscCommand, SourceAction
+from .profiles import ObservationMode, RuntimeContractError, task_profile_for_name
 
 
-DATASET_VERSION = 1
+DATASET_VERSION = 2
+LEGACY_TASK_NAME = "PickPlaceCan"
+LEGACY_OBSERVATION_MODE = ObservationMode.LOW_DIM
 
 
 class DatasetError(ValueError):
@@ -47,6 +50,8 @@ class TransitionRecord:
     gripper_state_after: tuple[float, ...]
     provider: str
     latency_ns: int
+    task_name: str = LEGACY_TASK_NAME
+    observation_mode: ObservationMode = LEGACY_OBSERVATION_MODE
 
     def __post_init__(self) -> None:
         if not isinstance(self.episode_id, str) or not self.episode_id.strip():
@@ -59,6 +64,13 @@ class TransitionRecord:
         if not isinstance(self.provider, str) or not self.provider.strip():
             raise DatasetError("provider must not be empty")
         object.__setattr__(self, "provider", self.provider.strip())
+        try:
+            profile = task_profile_for_name(self.task_name)
+            mode = ObservationMode.parse(self.observation_mode)
+        except RuntimeContractError as error:
+            raise DatasetError(str(error)) from error
+        object.__setattr__(self, "task_name", profile.env_name)
+        object.__setattr__(self, "observation_mode", mode)
 
         frame = self.current_pose.frame_id
         if any(
@@ -103,11 +115,14 @@ class TransitionRecord:
             "gripper_state_after": list(self.gripper_state_after),
             "provider": self.provider,
             "latency_ns": self.latency_ns,
+            "task_name": self.task_name,
+            "observation_mode": self.observation_mode.value,
         }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "TransitionRecord":
-        expected = {
+        version = value.get("version")
+        expected_v1 = {
             "version",
             "episode_id",
             "step_id",
@@ -122,13 +137,15 @@ class TransitionRecord:
             "provider",
             "latency_ns",
         }
+        expected_v2 = expected_v1 | {"task_name", "observation_mode"}
+        expected = expected_v1 if version == 1 else expected_v2
         if set(value) != expected:
             unknown = sorted(set(value) - expected)
             missing = sorted(expected - set(value))
             raise DatasetError(
                 f"transition keys mismatch; unknown={unknown}, missing={missing}"
             )
-        if value["version"] != DATASET_VERSION:
+        if version not in (1, DATASET_VERSION):
             raise DatasetError(
                 f"unsupported transition version {value['version']!r}"
             )
@@ -145,6 +162,14 @@ class TransitionRecord:
             gripper_state_after=value["gripper_state_after"],
             provider=value["provider"],
             latency_ns=value["latency_ns"],
+            task_name=(
+                LEGACY_TASK_NAME if version == 1 else value["task_name"]
+            ),
+            observation_mode=(
+                LEGACY_OBSERVATION_MODE
+                if version == 1
+                else value["observation_mode"]
+            ),
         )
 
 
@@ -154,6 +179,8 @@ def record_from_dynamics_result(
     episode_id: str,
     step_id: int,
     seed: int,
+    task_name: str = LEGACY_TASK_NAME,
+    observation_mode: ObservationMode = LEGACY_OBSERVATION_MODE,
 ) -> TransitionRecord:
     """Convert a ForwardDynamicsResult without introducing a circular import."""
 
@@ -182,6 +209,8 @@ def record_from_dynamics_result(
         gripper_state_after=result.gripper_state_after,
         provider=result.provider,
         latency_ns=result.latency_ns,
+        task_name=task_name,
+        observation_mode=observation_mode,
     )
 
 

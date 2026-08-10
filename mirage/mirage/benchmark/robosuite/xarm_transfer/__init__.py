@@ -30,11 +30,20 @@ from .simulation_transform import (
     SimulationTransformError,
     TargetDesiredPose,
 )
+from .profiles import (
+    BlockingControllerProfile,
+    CheckpointContract,
+    ObservationMode,
+    TASK_PROFILES,
+    TaskProfile,
+    resolve_checkpoint_contract,
+)
 from .runtime import (
     FrankaPandaSourceRuntime,
     RobosuiteXArmAbsoluteAdapter,
     create_default_xarm_blocking_controller,
     create_xarm_target_environment,
+    load_checkpoint_contract,
 )
 
 __all__ = [
@@ -43,6 +52,8 @@ __all__ = [
     "ORIENTATION_SLICE",
     "POSITION_SLICE",
     "CartesianPose",
+    "BlockingControllerProfile",
+    "CheckpointContract",
     "ForwardDynamics",
     "ForwardDynamicsConfig",
     "ForwardDynamicsConfigError",
@@ -51,6 +62,7 @@ __all__ = [
     "ForwardDynamicsResult",
     "FrankaPandaSourceRuntime",
     "OscActionScaler",
+    "ObservationMode",
     "PandaOnlineOracle",
     "RobosuiteXArmAbsoluteAdapter",
     "ScaledOscCommand",
@@ -60,8 +72,12 @@ __all__ = [
     "SimulationTransformError",
     "SimulationTaskFrameTransform",
     "SimulationToolFrameCorrection",
+    "TASK_PROFILES",
+    "TaskProfile",
     "TargetDesiredPose",
     "create_forward_dynamics",
     "create_default_xarm_blocking_controller",
     "create_xarm_target_environment",
+    "load_checkpoint_contract",
+    "resolve_checkpoint_contract",
 ]

@@ -1,6 +1,6 @@
 """Explicit action, pose, and forward-dynamics contracts.
 
-The PickPlaceCan policy action layout is fixed here as
+The registered low-dimensional task policy action layout is fixed here as
 ``[dx, dy, dz, dRx, dRy, dRz, gripper]``. Translation is measured in metres,
 rotation-vector components in radians, timestamps in nanoseconds, and
 quaternions are always XYZW.

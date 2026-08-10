@@ -7,6 +7,7 @@ ROS publisher, service client, action client, robot IP, or hardware SDK path.
 from __future__ import annotations
 
 import copy
+import importlib
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -15,6 +16,14 @@ import numpy as np
 
 from .contracts import CartesianPose, SourceAction
 from .dynamics import PandaOnlineOracle
+from .profiles import (
+    CheckpointContract,
+    ObservationMode,
+    RuntimeContractError,
+    TaskProfile,
+    resolve_checkpoint_contract,
+    task_profile_for_name,
+)
 
 
 SOURCE_ROBOSUITE_ROBOT_ID = "Panda"
@@ -23,32 +32,62 @@ TARGET_ROBOSUITE_ROBOT_ID = "XArm7"
 TARGET_FRAME_ID = "xarm7_sim_world"
 DEFAULT_XARM_WORKSPACE_MIN_M = (-0.65, -0.60, 0.40)
 DEFAULT_XARM_WORKSPACE_MAX_M = (0.35, 0.60, 1.35)
-DEFAULT_XARM_OSC_KP = np.full(6, 150.0)
-CONTACT_XARM_OSC_KP = np.asarray((300.0, 300.0, 500.0, 300.0, 300.0, 300.0))
 
 
-class RuntimeContractError(RuntimeError):
-    """Raised when a checkpoint or simulator does not match the transfer contract."""
+def _register_task_environment(profile: TaskProfile) -> None:
+    """Import the package that registers a profile's external Robosuite task."""
+
+    module_name = profile.environment_registration_module
+    if module_name is None:
+        return
+    try:
+        importlib.import_module(module_name)
+    except ImportError as error:
+        raise RuntimeContractError(
+            f"task {profile.env_name!r} requires environment package {module_name!r}"
+        ) from error
 
 
-def _low_dimensional_env_kwargs(
-    checkpoint_data: Mapping[str, Any], *, robot_id: str, render: bool
-) -> tuple[str, dict[str, Any]]:
-    """Copy checkpoint metadata while disabling every camera-only path."""
-
-    validate_pick_place_can_checkpoint_contract(
-        checkpoint_data["env_metadata"], checkpoint_data["shape_metadata"]
-    )
-    metadata = copy.deepcopy(checkpoint_data["env_metadata"])
-    kwargs = metadata["env_kwargs"]
-    kwargs["robots"] = [robot_id]
-    kwargs["has_renderer"] = bool(render)
+def _disable_policy_cameras(kwargs: dict[str, Any]) -> None:
     kwargs["has_offscreen_renderer"] = False
     kwargs["use_camera_obs"] = False
     kwargs["camera_depths"] = False
     for key in ("camera_segmentations", "render_gpu_device_id"):
         kwargs.pop(key, None)
-    return metadata["env_name"], kwargs
+
+
+def build_source_environment_metadata(
+    checkpoint_data: Mapping[str, Any],
+    contract: CheckpointContract,
+    *,
+    render: bool,
+) -> dict[str, Any]:
+    """Build source metadata while preserving future image policy cameras."""
+
+    metadata = copy.deepcopy(checkpoint_data["env_metadata"])
+    kwargs = metadata["env_kwargs"]
+    kwargs["robots"] = [SOURCE_ROBOSUITE_ROBOT_ID]
+    kwargs["has_renderer"] = bool(render)
+    if contract.observation_mode is ObservationMode.LOW_DIM:
+        _disable_policy_cameras(kwargs)
+    return metadata
+
+
+def build_target_environment_metadata(
+    checkpoint_data: Mapping[str, Any],
+    contract: CheckpointContract,
+    *,
+    render: bool,
+) -> dict[str, Any]:
+    """Build a camera-free target independent of source policy modality."""
+
+    metadata = copy.deepcopy(checkpoint_data["env_metadata"])
+    metadata["env_name"] = contract.task_name
+    kwargs = metadata["env_kwargs"]
+    kwargs["robots"] = [TARGET_ROBOSUITE_ROBOT_ID]
+    kwargs["has_renderer"] = bool(render)
+    _disable_policy_cameras(kwargs)
+    return metadata
 
 
 def create_xarm_target_environment(
@@ -62,76 +101,54 @@ def create_xarm_target_environment(
     there is no ROS, UFactory SDK, IP address, service, or action connection.
     """
 
-    from robomimic.utils import file_utils as FileUtils
+    checkpoint_data, contract = load_checkpoint_contract(checkpoint_path)
+    contract.require_runtime_supported()
+    metadata = build_target_environment_metadata(
+        checkpoint_data, contract, render=render
+    )
+    _register_task_environment(contract.task_profile)
     import robosuite
-
     from .robosuite_xarm7 import register_xarm7
+
+    register_xarm7()
+    environment = robosuite.make(metadata["env_name"], **metadata["env_kwargs"])
+    setattr(environment, "_mirage_checkpoint_contract", contract)
+    return environment
+
+
+def load_checkpoint_contract(
+    checkpoint_path: str | Path,
+) -> tuple[Mapping[str, Any], CheckpointContract]:
+    """Load checkpoint metadata and resolve its static transfer contract."""
+
+    from robomimic.utils import file_utils as FileUtils
 
     source = Path(checkpoint_path).expanduser()
     if not source.is_file():
         raise RuntimeContractError(f"checkpoint does not exist: {source}")
     checkpoint_data = FileUtils.load_dict_from_checkpoint(str(source))
-    env_name, kwargs = _low_dimensional_env_kwargs(
-        checkpoint_data, robot_id=TARGET_ROBOSUITE_ROBOT_ID, render=render
-    )
-    register_xarm7()
-    return robosuite.make(env_name, **kwargs)
+    return checkpoint_data, resolve_checkpoint_contract(checkpoint_data)
 
 
 def validate_pick_place_can_checkpoint_contract(
     env_metadata: Mapping[str, Any],
     shape_metadata: Mapping[str, Any],
 ) -> None:
-    """Require the exact Franka Panda source policy/controller contract."""
+    """Compatibility wrapper for the former PickPlaceCan low-dim validator."""
 
-    if env_metadata.get("env_name") != "PickPlaceCan":
-        raise RuntimeContractError("source checkpoint env must be PickPlaceCan")
-    kwargs = env_metadata.get("env_kwargs")
-    if not isinstance(kwargs, Mapping):
-        raise RuntimeContractError("source checkpoint has no env_kwargs mapping")
-    if kwargs.get("robots") != [SOURCE_ROBOSUITE_ROBOT_ID]:
-        raise RuntimeContractError(
-            "source checkpoint must contain exactly one Franka Panda robot"
-        )
-    if kwargs.get("control_freq") != 20:
-        raise RuntimeContractError("source checkpoint control_freq must be 20 Hz")
-    controller = kwargs.get("controller_configs")
-    if not isinstance(controller, Mapping):
-        raise RuntimeContractError("source checkpoint has no controller config")
-    if controller.get("type") != "OSC_POSE":
-        raise RuntimeContractError("source controller must be OSC_POSE")
-    if controller.get("control_delta") is not True:
-        raise RuntimeContractError("source controller must set control_delta=true")
-    if controller.get("input_min") != -1 or controller.get("input_max") != 1:
-        raise RuntimeContractError("source controller input range must be [-1, 1]")
-    expected_output_max = np.asarray((0.05, 0.05, 0.05, 0.5, 0.5, 0.5))
-    try:
-        output_max = np.asarray(controller.get("output_max"), dtype=np.float64)
-        output_min = np.asarray(controller.get("output_min"), dtype=np.float64)
-    except (TypeError, ValueError) as error:
-        raise RuntimeContractError("source OSC output scales must be numeric") from error
-    if not np.array_equal(output_max, expected_output_max) or not np.array_equal(
-        output_min, -expected_output_max
+    checkpoint_data = {
+        "env_metadata": env_metadata,
+        "shape_metadata": shape_metadata,
+        "config": {"experiment": {"rollout": {"horizon": 400}}},
+    }
+    contract = resolve_checkpoint_contract(checkpoint_data)
+    if (
+        contract.task_name != "PickPlaceCan"
+        or contract.observation_mode is not ObservationMode.LOW_DIM
     ):
         raise RuntimeContractError(
-            "source OSC output scales must be ±[0.05m, 0.5rad] per axis"
+            "source checkpoint must be PickPlaceCan low_dim"
         )
-    if shape_metadata.get("ac_dim") != 7:
-        raise RuntimeContractError("source policy action dimension must be 7")
-    shapes = shape_metadata.get("all_shapes")
-    if not isinstance(shapes, Mapping):
-        raise RuntimeContractError("source checkpoint has no observation shapes")
-    required_shapes = {
-        "object": [14],
-        "robot0_eef_pos": [3],
-        "robot0_eef_quat": [4],
-        "robot0_gripper_qpos": [2],
-    }
-    for key, expected in required_shapes.items():
-        if list(shapes.get(key, ())) != expected:
-            raise RuntimeContractError(
-                f"source observation {key!r} must have shape {expected}"
-            )
 
 
 def _unwrap_robosuite_environment(environment: Any) -> Any:
@@ -172,12 +189,13 @@ class FrankaPandaSourceRuntime:
         checkpoint_data: Mapping[str, Any],
         clock_ns: Callable[[], int] = time.time_ns,
     ) -> None:
-        validate_pick_place_can_checkpoint_contract(
-            checkpoint_data["env_metadata"], checkpoint_data["shape_metadata"]
-        )
+        contract = resolve_checkpoint_contract(checkpoint_data)
+        contract.require_runtime_supported()
         self.environment = environment
         self.policy = policy
         self.checkpoint_data = checkpoint_data
+        self.checkpoint_contract = contract
+        self.task_profile = contract.task_profile
         self.clock_ns = clock_ns
         self.core = _unwrap_robosuite_environment(environment)
         self.robot = None
@@ -218,23 +236,27 @@ class FrankaPandaSourceRuntime:
         """
 
         from robomimic.utils import file_utils as FileUtils
-        from robomimic.utils import env_utils as EnvUtils
 
         source = Path(checkpoint_path).expanduser()
         if not source.is_file():
             raise RuntimeContractError(f"checkpoint does not exist: {source}")
-        policy, checkpoint_data = FileUtils.policy_from_checkpoint(
+        checkpoint_data = FileUtils.load_dict_from_checkpoint(str(source))
+        contract = resolve_checkpoint_contract(checkpoint_data)
+        contract.require_runtime_supported()
+        _register_task_environment(contract.task_profile)
+        from robomimic.utils import env_utils as EnvUtils
+
+        policy, policy_checkpoint_data = FileUtils.policy_from_checkpoint(
             ckpt_path=str(source), device=device, verbose=False
         )
-        validate_pick_place_can_checkpoint_contract(
-            checkpoint_data["env_metadata"], checkpoint_data["shape_metadata"]
+        policy_contract = resolve_checkpoint_contract(policy_checkpoint_data)
+        if policy_contract != contract:
+            raise RuntimeContractError(
+                "checkpoint metadata changed while loading the source policy"
+            )
+        env_metadata = build_source_environment_metadata(
+            checkpoint_data, contract, render=render
         )
-        env_name, env_kwargs = _low_dimensional_env_kwargs(
-            checkpoint_data, robot_id=SOURCE_ROBOSUITE_ROBOT_ID, render=render
-        )
-        env_metadata = copy.deepcopy(checkpoint_data["env_metadata"])
-        env_metadata["env_name"] = env_name
-        env_metadata["env_kwargs"] = env_kwargs
         environment = EnvUtils.create_env_from_metadata(
             env_meta=env_metadata,
             render=render,
@@ -288,13 +310,14 @@ class FrankaPandaSourceRuntime:
         )
 
     def read_gripper_state(self) -> tuple[float, ...]:
-        if self.observation is None:
+        if self.observation is None or self.robot is None:
             raise RuntimeContractError("source runtime must be reset first")
-        value = np.asarray(
-            self.observation.get("robot0_gripper_qpos"), dtype=np.float64
-        )
+        indexes = getattr(self.robot, "_ref_gripper_joint_pos_indexes", None)
+        if not isinstance(indexes, (list, tuple, np.ndarray)):
+            raise RuntimeContractError("Franka Panda gripper qpos indexes are missing")
+        value = np.asarray(self.core.sim.data.qpos[indexes], dtype=np.float64)
         if value.shape != (2,) or not np.all(np.isfinite(value)):
-            raise RuntimeContractError("Franka Panda gripper observation is invalid")
+            raise RuntimeContractError("Franka Panda simulator gripper qpos is invalid")
         return tuple(float(item) for item in value)
 
     def policy_action(self, *, timestamp_ns: int | None = None) -> SourceAction:
@@ -352,13 +375,36 @@ class RobosuiteXArmAbsoluteAdapter:
         self,
         environment: Any,
         *,
+        task_profile: TaskProfile | None = None,
         clock_ns: Callable[[], int] = time.time_ns,
     ) -> None:
         self.environment = environment
         self.clock_ns = clock_ns
         self.core = _unwrap_robosuite_environment(environment)
+        embedded_contract = getattr(
+            environment, "_mirage_checkpoint_contract", None
+        )
+        if embedded_contract is not None and not isinstance(
+            embedded_contract, CheckpointContract
+        ):
+            raise RuntimeContractError(
+                "target environment has an invalid checkpoint contract"
+            )
+        inferred_profile = (
+            embedded_contract.task_profile
+            if embedded_contract is not None
+            else task_profile_for_name(type(self.core).__name__)
+        )
+        if task_profile is not None and task_profile != inferred_profile:
+            raise RuntimeContractError(
+                "target adapter task profile does not match its environment"
+            )
+        self.checkpoint_contract = embedded_contract
+        self.task_profile = task_profile or inferred_profile
         self.robot = None
         self._eef_site_name = ""
+        self._gripper_body_ids: frozenset[int] = frozenset()
+        self._task_object_geom_ids: frozenset[int] = frozenset()
         self._refresh_robot_reference()
         self.observation: Mapping[str, np.ndarray] | None = None
         self.step_count = 0
@@ -374,6 +420,53 @@ class RobosuiteXArmAbsoluteAdapter:
         if controller is None or not hasattr(controller, "eef_name"):
             raise RuntimeContractError("target robot has no Cartesian controller")
         self._eef_site_name = controller.eef_name
+        self._refresh_contact_references()
+
+    def _refresh_contact_references(self) -> None:
+        """Resolve all profile-selected manipulated objects in the MJCF model."""
+
+        task_model = getattr(self.core, "model", None)
+        objects = getattr(task_model, "mujoco_objects", None)
+        if not isinstance(objects, (list, tuple)):
+            raise RuntimeContractError(
+                "target task model exposes no mujoco_objects sequence"
+            )
+        selected_objects = []
+        for expected_name in self.task_profile.manipulated_object_names:
+            matches = [
+                model
+                for model in objects
+                if getattr(model, "name", None) == expected_name
+            ]
+            if len(matches) != 1:
+                raise RuntimeContractError(
+                    f"target task must contain exactly one object named {expected_name!r}; "
+                    f"found {len(matches)}"
+                )
+            contact_geoms = getattr(matches[0], "contact_geoms", None)
+            if not isinstance(contact_geoms, (list, tuple)) or not contact_geoms:
+                raise RuntimeContractError(
+                    f"target task object {expected_name!r} has no contact geoms"
+                )
+            selected_objects.append(matches[0])
+        try:
+            object_geom_ids = frozenset(
+                int(self.core.sim.model.geom_name2id(name))
+                for model in selected_objects
+                for name in model.contact_geoms
+            )
+            gripper_body_ids = frozenset(
+                int(self.core.sim.model.body_name2id(name))
+                for name in self.robot.gripper.bodies
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeContractError(
+                "target task contact geometry cannot be resolved"
+            ) from error
+        if not object_geom_ids or not gripper_body_ids:
+            raise RuntimeContractError("target task contact geometry is empty")
+        self._task_object_geom_ids = object_geom_ids
+        self._gripper_body_ids = gripper_body_ids
 
     def reset(self, seed: int | None = None) -> Mapping[str, np.ndarray]:
         if seed is not None:
@@ -394,11 +487,14 @@ class RobosuiteXArmAbsoluteAdapter:
     def _configure_simulation_osc_gains(self) -> None:
         """Use higher simulated stiffness only while carrying a task object."""
 
-        kp = (
-            CONTACT_XARM_OSC_KP
-            if self.has_gripper_task_object_contact()
-            else DEFAULT_XARM_OSC_KP
-        )
+        profile = self.task_profile.controller_profile
+        kp = profile.free_osc_kp
+        if (
+            profile.contact_osc_kp is not None
+            and self.has_gripper_task_object_contact()
+        ):
+            kp = profile.contact_osc_kp
+        kp = np.asarray(kp, dtype=np.float64)
         self.robot.controller.kp = kp.copy()
         self.robot.controller.kd = 2.0 * np.sqrt(kp)
 
@@ -446,30 +542,18 @@ class RobosuiteXArmAbsoluteAdapter:
         simulation-local and include that mesh without guessing geom names.
         """
 
-        objects = getattr(self.core, "objects", None)
-        if not isinstance(objects, (list, tuple)):
-            raise RuntimeContractError("target environment exposes no task objects")
-        gripper_body_ids = {
-            self.core.sim.model.body_name2id(name)
-            for name in self.robot.gripper.bodies
-        }
-        object_geom_ids = {
-            self.core.sim.model.geom_name2id(name)
-            for model in objects
-            for name in model.contact_geoms
-        }
         for index in range(self.core.sim.data.ncon):
             contact = self.core.sim.data.contact[index]
             geom1 = int(contact.geom1)
             geom2 = int(contact.geom2)
-            if geom1 in object_geom_ids:
+            if geom1 in self._task_object_geom_ids:
                 other_geom = geom2
-            elif geom2 in object_geom_ids:
+            elif geom2 in self._task_object_geom_ids:
                 other_geom = geom1
             else:
                 continue
             other_body = int(self.core.sim.model.geom_bodyid[other_geom])
-            if other_body in gripper_body_ids:
+            if other_body in self._gripper_body_ids:
                 return True
         return False
 
@@ -524,19 +608,26 @@ def create_default_xarm_blocking_controller(
         max_prediction_orientation_error_rad=np.deg2rad(10.0),
         joint_limit_margin_rad=0.01,
     )
+    profile = adapter.task_profile.controller_profile
     return AbsoluteBlockingController(
         adapter=adapter,
         safety_filter=SimulationSafetyFilter(limits),
-        position_tolerance_m=0.025,
-        orientation_tolerance_rad=np.deg2rad(7.0),
-        contact_position_tolerance_m=0.060,
-        contact_orientation_tolerance_rad=np.deg2rad(18.0),
-        settling_iterations=4,
-        outer_loop_position_gain=1.0,
-        max_outer_loop_position_correction_m=0.030,
-        contact_max_outer_loop_position_correction_m=0.100,
-        outer_loop_orientation_gain=0.5,
-        max_outer_loop_orientation_correction_rad=np.deg2rad(5.0),
-        max_iterations=300,
-        timeout_sec=2.0,
+        position_tolerance_m=profile.position_tolerance_m,
+        orientation_tolerance_rad=profile.orientation_tolerance_rad,
+        contact_position_tolerance_m=profile.contact_position_tolerance_m,
+        contact_orientation_tolerance_rad=profile.contact_orientation_tolerance_rad,
+        settling_iterations=profile.settling_iterations,
+        outer_loop_position_gain=profile.outer_loop_position_gain,
+        max_outer_loop_position_correction_m=(
+            profile.max_outer_loop_position_correction_m
+        ),
+        contact_max_outer_loop_position_correction_m=(
+            profile.contact_max_outer_loop_position_correction_m
+        ),
+        outer_loop_orientation_gain=profile.outer_loop_orientation_gain,
+        max_outer_loop_orientation_correction_rad=(
+            profile.max_outer_loop_orientation_correction_rad
+        ),
+        max_iterations=profile.max_iterations,
+        timeout_sec=profile.timeout_sec,
     )

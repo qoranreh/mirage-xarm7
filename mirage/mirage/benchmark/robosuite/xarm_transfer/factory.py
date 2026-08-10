@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from .dynamics import ForwardDynamics, PandaOnlineOracle
 from .models import ModelError, PoseDeltaForwardDynamics
+from .profiles import CheckpointContract
 
 
 class ForwardDynamicsConfigError(ValueError):
@@ -50,6 +51,7 @@ def create_forward_dynamics(
     config: ForwardDynamicsConfig,
     *,
     online_oracle: PandaOnlineOracle | None = None,
+    checkpoint_contract: CheckpointContract | None = None,
 ) -> ForwardDynamics:
     """Create one provider under the common interface."""
 
@@ -72,4 +74,9 @@ def create_forward_dynamics(
         raise ForwardDynamicsConfigError(
             "learned Ridge artifact has no held-out validation bounds"
         )
+    if checkpoint_contract is not None:
+        try:
+            model.require_checkpoint_contract(checkpoint_contract)
+        except ModelError as error:
+            raise ForwardDynamicsConfigError(str(error)) from error
     return model

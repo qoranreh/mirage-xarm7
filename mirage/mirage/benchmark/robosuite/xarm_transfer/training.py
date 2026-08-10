@@ -22,6 +22,7 @@ from .models import (
     PoseErrorMetrics,
     compare_linear_models,
 )
+from .profiles import task_profile_for_name
 
 
 class TrainingError(RuntimeError):
@@ -102,6 +103,15 @@ def train_and_evaluate(
     if len(frame_ids) != 1:
         raise TrainingError("dataset must contain exactly one source frame")
     expected_frame_id = frame_ids.pop()
+    task_modes = {
+        (record.task_name, record.observation_mode) for record in dataset.records
+    }
+    if len(task_modes) != 1:
+        raise TrainingError(
+            "dataset must contain exactly one task and observation mode"
+        )
+    task_name, observation_mode = task_modes.pop()
+    task_profile = task_profile_for_name(task_name)
     metrics, selected_model = compare_linear_models(
         train,
         validation,
@@ -112,7 +122,7 @@ def train_and_evaluate(
         raise TrainingError("training did not select a Ridge model")
 
     output = (
-        default_artifact_directory()
+        default_artifact_directory(task_profile, observation_mode)
         if output_directory is None
         else Path(output_directory).expanduser()
     )
@@ -140,10 +150,12 @@ def train_and_evaluate(
         key=str,
     )
     report = {
-        "version": 1,
+        "version": 2,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "dataset_path": str(Path(dataset_path).expanduser().resolve()),
         "source_frame": expected_frame_id,
+        "task_name": task_name,
+        "observation_mode": observation_mode.value,
         "transition_count": len(dataset),
         "train_transition_count": len(train),
         "validation_transition_count": len(validation),

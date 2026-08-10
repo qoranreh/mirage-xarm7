@@ -26,9 +26,17 @@ from .geometry import (
     quaternion_to_rotvec,
     relative_rotation_vector,
 )
+from .profiles import (
+    CheckpointContract,
+    ObservationMode,
+    RuntimeContractError,
+    task_profile_for_name,
+)
 
 
-MODEL_VERSION = 1
+MODEL_VERSION = 2
+LEGACY_TASK_NAME = "PickPlaceCan"
+LEGACY_OBSERVATION_MODE = ObservationMode.LOW_DIM
 FEATURE_DIM = 13
 OUTPUT_DIM = 6
 
@@ -105,6 +113,8 @@ class PoseDeltaForwardDynamics(ForwardDynamics):
         ridge_alpha: float = 1.0,
         policy_period_ns: int = 50_000_000,
         scaler: OscActionScaler | None = None,
+        task_name: str = LEGACY_TASK_NAME,
+        observation_mode: ObservationMode | str = LEGACY_OBSERVATION_MODE,
     ) -> None:
         if model_kind not in {"linear", "ridge"}:
             raise ModelError("model_kind must be 'linear' or 'ridge'")
@@ -115,11 +125,18 @@ class PoseDeltaForwardDynamics(ForwardDynamics):
             raise ModelError("ridge_alpha must be finite and non-negative")
         if type(policy_period_ns) is not int or policy_period_ns <= 0:
             raise ModelError("policy_period_ns must be a positive integer")
+        try:
+            profile = task_profile_for_name(task_name)
+            resolved_mode = ObservationMode.parse(observation_mode)
+        except RuntimeContractError as error:
+            raise ModelError(str(error)) from error
         self.model_kind = model_kind
         self.expected_frame_id = expected_frame_id.strip()
         self.ridge_alpha = alpha
         self.policy_period_ns = policy_period_ns
         self.scaler = scaler or OscActionScaler()
+        self.task_name = profile.env_name
+        self.observation_mode = resolved_mode
         self.coef_: np.ndarray | None = None
         self.intercept_: np.ndarray | None = None
         self.validation_metrics: PoseErrorMetrics | None = None
@@ -139,6 +156,22 @@ class PoseDeltaForwardDynamics(ForwardDynamics):
                     f"{description} frame {record.current_pose.frame_id!r} does not "
                     f"match {self.expected_frame_id!r}"
                 )
+            if (
+                record.task_name != self.task_name
+                or record.observation_mode is not self.observation_mode
+            ):
+                raise ModelError(
+                    f"{description} task/observation mode does not match model"
+                )
+
+    def require_checkpoint_contract(self, contract: CheckpointContract) -> None:
+        try:
+            contract.require_artifact_contract(
+                task_name=self.task_name,
+                observation_mode=self.observation_mode,
+            )
+        except RuntimeContractError as error:
+            raise ModelError(str(error)) from error
 
     def fit(self, records: Sequence[TransitionRecord]) -> "PoseDeltaForwardDynamics":
         self._validate_records(records, "training")
@@ -288,6 +321,8 @@ class PoseDeltaForwardDynamics(ForwardDynamics):
                 if self.validation_metrics is None
                 else asdict(self.validation_metrics)
             ),
+            "task_name": self.task_name,
+            "observation_mode": self.observation_mode.value,
         }
         np.savez_compressed(
             destination,
@@ -305,7 +340,7 @@ class PoseDeltaForwardDynamics(ForwardDynamics):
         try:
             with np.load(source, allow_pickle=False) as artifact:
                 if set(artifact.files) != {"coef", "intercept", "metadata"}:
-                    raise ModelError("model artifact keys do not match version-1 schema")
+                    raise ModelError("model artifact keys do not match schema")
                 coefficient = np.asarray(artifact["coef"], dtype=np.float64)
                 intercept = np.asarray(artifact["intercept"], dtype=np.float64)
                 metadata_value = artifact["metadata"]
@@ -314,7 +349,7 @@ class PoseDeltaForwardDynamics(ForwardDynamics):
                 metadata = json.loads(str(metadata_value.item()))
         except (OSError, ValueError, json.JSONDecodeError) as error:
             raise ModelError(f"cannot load model artifact {source}: {error}") from error
-        expected_keys = {
+        expected_v1 = {
             "version",
             "model_kind",
             "expected_frame_id",
@@ -328,8 +363,11 @@ class PoseDeltaForwardDynamics(ForwardDynamics):
             "policy_rate_hz",
             "validation_metrics",
         }
-        if set(metadata) != expected_keys or metadata["version"] != MODEL_VERSION:
-            raise ModelError("model metadata does not match version-1 schema")
+        expected_v2 = expected_v1 | {"task_name", "observation_mode"}
+        version = metadata.get("version")
+        expected_keys = expected_v1 if version == 1 else expected_v2
+        if set(metadata) != expected_keys or version not in (1, MODEL_VERSION):
+            raise ModelError("model metadata does not match a supported schema")
         if metadata["feature_dim"] != FEATURE_DIM or metadata["output_dim"] != OUTPUT_DIM:
             raise ModelError("model artifact dimensions are incompatible")
         if coefficient.shape != (OUTPUT_DIM, FEATURE_DIM):
@@ -350,6 +388,14 @@ class PoseDeltaForwardDynamics(ForwardDynamics):
             ridge_alpha=metadata["ridge_alpha"],
             policy_period_ns=metadata["policy_period_ns"],
             scaler=scaler,
+            task_name=(
+                LEGACY_TASK_NAME if version == 1 else metadata["task_name"]
+            ),
+            observation_mode=(
+                LEGACY_OBSERVATION_MODE
+                if version == 1
+                else metadata["observation_mode"]
+            ),
         )
         model.coef_ = coefficient
         model.intercept_ = intercept
@@ -476,11 +522,19 @@ def compare_linear_models(
     learned provider is deliberately Ridge as required by the transfer path.
     """
 
+    if not train or not validation:
+        raise ModelError("training and validation records must not be empty")
+    task_name = train[0].task_name
+    observation_mode = train[0].observation_mode
+
     candidates: list[tuple[str, PoseDeltaForwardDynamics]] = [
         (
             "linear",
             PoseDeltaForwardDynamics(
-                model_kind="linear", expected_frame_id=expected_frame_id
+                model_kind="linear",
+                expected_frame_id=expected_frame_id,
+                task_name=task_name,
+                observation_mode=observation_mode,
             ),
         )
     ]
@@ -493,6 +547,8 @@ def compare_linear_models(
                     model_kind="ridge",
                     expected_frame_id=expected_frame_id,
                     ridge_alpha=alpha,
+                    task_name=task_name,
+                    observation_mode=observation_mode,
                 ),
             )
         )

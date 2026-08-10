@@ -23,6 +23,7 @@ from .runtime import (
     RobosuiteXArmAbsoluteAdapter,
     create_default_xarm_blocking_controller,
     create_xarm_target_environment,
+    load_checkpoint_contract,
 )
 from .training import require_git_ignored, train_and_evaluate
 
@@ -50,12 +51,12 @@ def _parser() -> argparse.ArgumentParser:
     collect.add_argument(
         "--output",
         type=Path,
-        default=default_artifact_directory() / "panda_transitions.jsonl",
+        default=None,
     )
 
     train = subparsers.add_parser("train", help="train and evaluate Linear/Ridge")
     train.add_argument("--dataset", required=True, type=Path)
-    train.add_argument("--output-directory", type=Path, default=default_artifact_directory())
+    train.add_argument("--output-directory", type=Path, default=None)
     train.add_argument("--group-by", choices=("episode", "seed"), default="episode")
     train.add_argument("--validation-fraction", type=float, default=0.25)
     train.add_argument("--split-seed", type=int, default=0)
@@ -73,22 +74,27 @@ def _parser() -> argparse.ArgumentParser:
     rollout.add_argument("--model", type=Path)
     rollout.add_argument("--dataset", type=Path)
     rollout.add_argument("--seeds", type=_seeds, default=(0, 1, 2))
-    rollout.add_argument("--steps", type=int, default=50)
+    rollout.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help="policy steps; defaults to the checkpoint native rollout horizon",
+    )
     rollout.add_argument(
         "--terminate-on-success",
         action="store_true",
-        help="stop an oracle episode when either simulation task succeeds",
+        help="stop an oracle episode only when the target xArm task succeeds",
     )
     rollout.add_argument("--device", default="cpu")
     rollout.add_argument(
         "--output",
         type=Path,
-        default=default_artifact_directory() / "xarm_rollout_report.json",
+        default=None,
     )
     rollout.add_argument(
         "--oracle-output",
         type=Path,
-        default=default_artifact_directory() / "rollout_oracle_transitions.jsonl",
+        default=None,
     )
     return parser
 
@@ -105,17 +111,33 @@ def _seed_episode(dataset: TransitionDataset, seed: int):
 
 
 def _rollout(parsed: argparse.Namespace) -> int:
-    if parsed.steps <= 0:
+    _, checkpoint_contract = load_checkpoint_contract(parsed.checkpoint)
+    checkpoint_contract.require_runtime_supported()
+    steps = (
+        checkpoint_contract.native_rollout_horizon
+        if parsed.steps is None
+        else parsed.steps
+    )
+    if steps <= 0:
         raise ValueError("rollout steps must be positive")
     if parsed.mode in {"learned", "both"} and parsed.model is None:
         raise ValueError("--model is required for learned or both mode")
     if parsed.mode == "learned" and parsed.dataset is None:
         raise ValueError("--dataset is required for learned-only mode")
 
+    artifact_directory = default_artifact_directory(
+        checkpoint_contract.task_profile,
+        checkpoint_contract.observation_mode,
+    )
+    output_path = parsed.output or artifact_directory / "xarm_rollout_report.json"
+    oracle_output_path = (
+        parsed.oracle_output
+        or artifact_directory / "rollout_oracle_transitions.jsonl"
+    )
     repository_root = Path(__file__).resolve().parents[5]
-    require_git_ignored(parsed.output, repository_root=repository_root)
+    require_git_ignored(output_path, repository_root=repository_root)
     if parsed.mode in {"oracle", "both"}:
-        require_git_ignored(parsed.oracle_output, repository_root=repository_root)
+        require_git_ignored(oracle_output_path, repository_root=repository_root)
 
     source_runtime = None
     target_environment = create_xarm_target_environment(parsed.checkpoint)
@@ -129,7 +151,8 @@ def _rollout(parsed: argparse.Namespace) -> int:
     replay_dataset = None
     if parsed.mode in {"learned", "both"}:
         learned = create_forward_dynamics(
-            ForwardDynamicsConfig("learned_ridge", str(parsed.model))
+            ForwardDynamicsConfig("learned_ridge", str(parsed.model)),
+            checkpoint_contract=checkpoint_contract,
         )
     if parsed.mode == "learned":
         replay_dataset = TransitionDataset.read_jsonl(parsed.dataset)
@@ -145,7 +168,7 @@ def _rollout(parsed: argparse.Namespace) -> int:
                     target_adapter=target_adapter,
                     controller=controller,
                     seed=seed,
-                    steps=parsed.steps,
+                    steps=steps,
                     terminate_on_success=parsed.terminate_on_success,
                 )
                 reports.append(report)
@@ -162,9 +185,9 @@ def _rollout(parsed: argparse.Namespace) -> int:
                         controller=controller,
                         seed=seed,
                         steps=(
-                            min(parsed.steps, len(seed_records))
+                            min(steps, len(seed_records))
                             if parsed.mode == "both" and parsed.terminate_on_success
-                            else parsed.steps
+                            else steps
                         ),
                     )
                 )
@@ -174,8 +197,8 @@ def _rollout(parsed: argparse.Namespace) -> int:
             source_runtime.core.close()
 
     if oracle_records:
-        TransitionDataset(oracle_records).write_jsonl(parsed.oracle_output)
-    output = write_rollout_reports(parsed.output, reports)
+        TransitionDataset(oracle_records).write_jsonl(oracle_output_path)
+    output = write_rollout_reports(output_path, reports)
     summaries = []
     for report in reports:
         summary = asdict(report)
@@ -190,8 +213,17 @@ def main(args: list[str] | None = None) -> int:
     if parsed.command == "rollout":
         return _rollout(parsed)
     if parsed.command == "collect":
+        _, checkpoint_contract = load_checkpoint_contract(parsed.checkpoint)
+        checkpoint_contract.require_runtime_supported()
+        output_path = parsed.output or (
+            default_artifact_directory(
+                checkpoint_contract.task_profile,
+                checkpoint_contract.observation_mode,
+            )
+            / "panda_transitions.jsonl"
+        )
         require_git_ignored(
-            parsed.output, repository_root=Path(__file__).resolve().parents[5]
+            output_path, repository_root=Path(__file__).resolve().parents[5]
         )
         runtime = FrankaPandaSourceRuntime.from_checkpoint(
             parsed.checkpoint, device=parsed.device
@@ -199,7 +231,7 @@ def main(args: list[str] | None = None) -> int:
         dataset, summary = collect_panda_oracle_transitions(
             runtime, seeds=parsed.seeds, steps_per_episode=parsed.steps
         )
-        output = dataset.write_jsonl(parsed.output)
+        output = dataset.write_jsonl(output_path)
         print(json.dumps({"output": str(output), **asdict(summary)}, sort_keys=True))
         return 0
 
