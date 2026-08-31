@@ -379,9 +379,32 @@ class CheckpointContract:
     def shapes(self) -> dict[str, tuple[int, ...]]:
         return dict(self.observation_shapes)
 
+    @property
+    def image_observation_key(self) -> str | None:
+        image_keys = tuple(
+            key for key, _ in self.observation_shapes if key.endswith("_image")
+        )
+        if not image_keys:
+            return None
+        if len(image_keys) != 1:
+            raise RuntimeContractError(
+                "image runtime requires exactly one camera observation"
+            )
+        return image_keys[0]
+
+    @property
+    def camera_name(self) -> str | None:
+        key = self.image_observation_key
+        return None if key is None else key[: -len("_image")]
+
     def require_runtime_supported(self) -> None:
-        if self.observation_mode is not ObservationMode.LOW_DIM:
-            raise RuntimeContractError("image observation runtime not implemented")
+        if self.observation_mode is ObservationMode.LOW_DIM:
+            return
+        key = self.image_observation_key
+        if key != "agentview_image" or self.shapes[key] != (3, 84, 84):
+            raise RuntimeContractError(
+                "image runtime requires one agentview_image with shape [3, 84, 84]"
+            )
 
     def require_artifact_contract(
         self, *, task_name: str, observation_mode: ObservationMode | str

@@ -7,13 +7,20 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+import cv2
+import imageio.v2 as imageio
+import numpy as np
+
 from .collection import collect_panda_oracle_transitions, default_artifact_directory
 from .dataset import TransitionDataset
 from .factory import (
     ForwardDynamicsConfig,
     create_forward_dynamics,
 )
+from .image_runtime import CrossPaintSourceWorker
+from .profiles import ObservationMode
 from .rollout import (
+    run_cross_paint_oracle_episode,
     run_learned_replay_episode,
     run_online_oracle_episode,
     write_rollout_reports,
@@ -69,7 +76,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     rollout.add_argument("--checkpoint", required=True)
     rollout.add_argument(
-        "--mode", choices=("oracle", "learned", "both"), default="both"
+        "--mode", choices=("oracle", "learned", "both"), default=None
     )
     rollout.add_argument("--model", type=Path)
     rollout.add_argument("--dataset", type=Path)
@@ -96,7 +103,81 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
     )
+    rollout.add_argument(
+        "--visual-input",
+        choices=("cross_paint", "naive"),
+        default="cross_paint",
+        help="image-policy input; ignored by low-dimensional checkpoints",
+    )
+    rollout.add_argument(
+        "--cross-paint-video",
+        type=Path,
+        default=None,
+        help="optional five-panel image-policy debug MP4",
+    )
+    rollout.add_argument(
+        "--mask-render-scale",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="render segmentation masks at 84 or mask-only 168 resolution",
+    )
     return parser
+
+
+class _CrossPaintVideoWriter:
+    """Write target, mask, background, source layer, and policy input panels."""
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self._writer = imageio.get_writer(
+            str(path), fps=20, codec="libx264", macro_block_size=2
+        )
+
+    @staticmethod
+    def _labeled(image: np.ndarray, label: str) -> np.ndarray:
+        panel = np.ascontiguousarray(image.copy())
+        cv2.rectangle(panel, (0, 0), (83, 14), (0, 0, 0), thickness=-1)
+        cv2.putText(
+            panel,
+            label,
+            (2, 11),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.28,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return panel
+
+    def __call__(self, _step_id, target_frame, source_step) -> None:
+        mask = np.zeros_like(target_frame.rgb)
+        mask[source_step.target_inpaint_mask] = (255, 255, 255)
+        source = np.zeros_like(source_step.source_rgb)
+        source[source_step.source_robot_mask] = source_step.source_rgb[
+            source_step.source_robot_mask
+        ]
+        frame = np.concatenate(
+            (
+                self._labeled(target_frame.rgb, "target"),
+                self._labeled(mask, "mask"),
+                self._labeled(source_step.background_rgb, "inpaint"),
+                self._labeled(source, "source"),
+                self._labeled(source_step.policy_rgb, "policy"),
+            ),
+            axis=1,
+        )
+        self._writer.append_data(frame)
+
+    def close(self) -> None:
+        self._writer.close()
+
+
+def _seed_video_path(path: Path, seed: int, seed_count: int) -> Path:
+    if seed_count == 1:
+        return path
+    return path.with_name(f"{path.stem}_seed{seed}{path.suffix or '.mp4'}")
 
 
 def _seed_episode(dataset: TransitionDataset, seed: int):
@@ -110,9 +191,87 @@ def _seed_episode(dataset: TransitionDataset, seed: int):
     return records
 
 
+def _rollout_image(
+    parsed: argparse.Namespace,
+    *,
+    checkpoint_contract,
+    steps: int,
+) -> int:
+    if parsed.mode != "oracle":
+        raise ValueError("image checkpoints currently support oracle rollout mode only")
+    artifact_directory = default_artifact_directory(
+        checkpoint_contract.task_profile,
+        checkpoint_contract.observation_mode,
+    )
+    output_path = parsed.output or artifact_directory / "xarm_rollout_report.json"
+    oracle_output_path = (
+        parsed.oracle_output
+        or artifact_directory / "rollout_oracle_transitions.jsonl"
+    )
+    repository_root = Path(__file__).resolve().parents[5]
+    require_git_ignored(output_path, repository_root=repository_root)
+    require_git_ignored(oracle_output_path, repository_root=repository_root)
+    if parsed.cross_paint_video is not None:
+        require_git_ignored(
+            parsed.cross_paint_video, repository_root=repository_root
+        )
+
+    reports = []
+    records = []
+    for seed in parsed.seeds:
+        target_environment = create_xarm_target_environment(parsed.checkpoint)
+        target_adapter = RobosuiteXArmAbsoluteAdapter(target_environment)
+        controller = create_default_xarm_blocking_controller(target_adapter)
+        video_writer = None
+        if parsed.cross_paint_video is not None:
+            video_writer = _CrossPaintVideoWriter(
+                _seed_video_path(
+                    parsed.cross_paint_video, seed, len(parsed.seeds)
+                )
+            )
+        try:
+            with CrossPaintSourceWorker(
+                parsed.checkpoint,
+                device=parsed.device,
+                mask_render_scale=parsed.mask_render_scale,
+            ) as source_worker:
+                dataset, report = run_cross_paint_oracle_episode(
+                    source_worker=source_worker,
+                    target_adapter=target_adapter,
+                    controller=controller,
+                    seed=seed,
+                    steps=steps,
+                    terminate_on_success=parsed.terminate_on_success,
+                    visual_input=parsed.visual_input,
+                    frame_callback=video_writer,
+                )
+            records.extend(dataset.records)
+            reports.append(report)
+        finally:
+            if video_writer is not None:
+                video_writer.close()
+            target_environment.close()
+
+    TransitionDataset(records).write_jsonl(oracle_output_path)
+    output = write_rollout_reports(output_path, reports)
+    summaries = []
+    for report in reports:
+        summary = asdict(report)
+        summary.pop("steps")
+        summaries.append(summary)
+    print(json.dumps({"output": str(output), "reports": summaries}, sort_keys=True))
+    return 0
+
+
 def _rollout(parsed: argparse.Namespace) -> int:
     _, checkpoint_contract = load_checkpoint_contract(parsed.checkpoint)
     checkpoint_contract.require_runtime_supported()
+    if parsed.mode is None:
+        parsed.mode = (
+            "oracle"
+            if checkpoint_contract.observation_mode is not ObservationMode.LOW_DIM
+            else "both"
+        )
     steps = (
         checkpoint_contract.native_rollout_horizon
         if parsed.steps is None
@@ -120,6 +279,12 @@ def _rollout(parsed: argparse.Namespace) -> int:
     )
     if steps <= 0:
         raise ValueError("rollout steps must be positive")
+    if checkpoint_contract.observation_mode is not ObservationMode.LOW_DIM:
+        return _rollout_image(
+            parsed, checkpoint_contract=checkpoint_contract, steps=steps
+        )
+    if parsed.cross_paint_video is not None:
+        raise ValueError("--cross-paint-video requires an image checkpoint")
     if parsed.mode in {"learned", "both"} and parsed.model is None:
         raise ValueError("--model is required for learned or both mode")
     if parsed.mode == "learned" and parsed.dataset is None:

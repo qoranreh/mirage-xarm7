@@ -10,7 +10,8 @@ real calibration is used here.
 `profiles.py` resolves each checkpoint into
 `TaskProfile × ObservationMode × ForwardDynamics × TargetController`. The
 active runtime profiles are `PickPlaceCan`, `Lift`, `Square_D0`, `Stack_D0`,
-and `ThreePieceAssembly_D0`, all for low-dimensional online-oracle rollout.
+and `ThreePieceAssembly_D0`. All three checkpoint observation modes are
+supported: `low_dim`, `image_no_proprio`, and `image_proprio`.
 The shared action layout is
 `[dx, dy, dz, dRx, dRy, dRz, gripper]`. The policy runs at 20 Hz with
 `OSC_POSE`, `control_delta=true`, translation limits of ±0.05 m per axis, and
@@ -35,13 +36,29 @@ and blocking-controller profile:
 | Stack_D0 | `[23]` | `cubeA` | 400 | disabled |
 | ThreePieceAssembly_D0 | `[42]` | `piece_1`, `piece_2` | 500 | verified contact: 0.060 m / 18° |
 
-Checkpoints using `image_no_proprio` or `image_proprio` are classified, but
-inference is deliberately unavailable in this phase. Both runtime factories
-fail before simulator construction with
-`image observation runtime not implemented`. Observation shapes are the
-modality source of truth, so stale `use_camera_obs=true` flags in MimicGen
-low-dimensional checkpoints are sanitized before environment construction.
-The target is always camera-free and never inherits source policy cameras.
+Image checkpoints must contain exactly one `agentview_image` observation with
+shape `[3, 84, 84]`. Cross-painting removes the visible xArm mask with OpenCV
+Telea inpainting, depth-composites the rendered Panda layer, and passes the
+result to the source policy. Robot, gripper, and manipulated-object masks are
+resolved separately from element geom IDs. One-pixel dilation is applied only
+to the gripper mask, and visible object pixels are removed from the inpainting
+mask. Object pixels remain depth-tested, so the Panda can occlude an object
+only when its rendered depth is actually nearer. `--mask-render-scale 2`
+optionally renders only segmentation at 168 x 168 and conservatively pools it
+back to 84 x 84; RGB, depth, and policy input remain 84 x 84.
+
+Before every image-policy observation, the worker copies manipulated-object
+qpos and qvel, aligns the Panda with the original absolute-OSC approach while
+holding gripper input at zero, then reapplies object qpos/qvel because OSC
+advances physics. Position and orientation convergence use separate 3 mm and
+2 degree bounds with at most 100 iterations. No arm IK or robot-qpos teleport
+is used. `image_proprio` additionally receives the aligned Panda EEF and
+gripper observations; `image_no_proprio` uses only the image. Camera
+differences are handled by RGB-D reprojection and a z-buffer. The Panda policy
+and renderer run in a spawned worker so their EGL context is isolated from the
+xArm target. Observation shapes remain the modality source of truth, so stale
+`use_camera_obs=true` flags in low-dimensional checkpoints are sanitized
+before construction.
 
 `SimulationTransform` is a separate type whose `kind` is always
 `simulation_only` and whose `calibrated` value is always false. Version 2
@@ -129,8 +146,18 @@ controller call and before every repeat, `SimulationSafetyFilter` checks:
 - held-out model position and orientation error bounds.
 
 The normalized xArm simulation gripper convention is explicit: `-1` is open
-and `+1` is closed. A rejected or out-of-bound learned prediction is never
-sent to the target controller.
+and `+1` is closed. Cartesian and settling iterations always send gripper zero,
+so the xArm incremental formatter cannot accumulate the policy sign at every
+physics tick. After pose convergence the adapter advances the xArm actuator
+target exactly once by the Panda-calibrated 0.25 normalized increment, then
+executes one zero-gripper control period to advance physics. Failed or rejected
+pose goals do not update the gripper target. The actual xArm driver-joint
+closure and finger-pad aperture are measured before every image-policy step;
+the normalized opening is written into the virtual Panda finger qpos, qvel,
+current actuator target, and proprioceptive observation. Rollout reports record
+the per-step application count, both apertures, normalized opening error,
+protected object pixels, and object-pixel loss. A rejected or out-of-bound
+learned prediction is never sent to the target controller.
 
 Both static controller profiles use a 0.025 m position tolerance and a 7°
 orientation tolerance in free space. Success requires five consecutive
@@ -198,6 +225,24 @@ MUJOCO_GL=egl ../.venv/bin/python -m \
   --checkpoint mirage/models/two_piece/low_dim/model_epoch_1000_ThreePieceAssembly_D0_success_0.68.pth \
   --mode oracle --seeds 0 --terminate-on-success
 ```
+
+Image checkpoints select cross-paint oracle mode by default. The optional
+debug video contains target RGB, target mask, inpainted background, reprojected
+Panda layer, and the final policy image:
+
+```bash
+cd mirage
+MUJOCO_GL=egl ../.venv/bin/python -m \
+  mirage.benchmark.robosuite.xarm_transfer.cli rollout \
+  --checkpoint mirage/models/can/image_proprio/model_epoch_160_PickPlaceCan_success_0.94.pth \
+  --seeds 0 --terminate-on-success \
+  --visual-input cross_paint \
+  --cross-paint-video mirage/benchmark/robosuite/results/xarm_transfer/pick-place-can/image_proprio/cross_paint.mp4
+```
+
+Use `--visual-input naive` for the ablation that feeds the unmodified xArm
+image to the Panda policy. Image checkpoints currently use online-oracle
+forward dynamics; learned Ridge replay remains a low-dimensional path.
 
 Run both providers against the same held-out seeds and freshly recorded oracle
 actions:

@@ -18,10 +18,8 @@ from mirage.benchmark.robosuite.xarm_transfer.profiles import (
     resolve_checkpoint_contract,
 )
 from mirage.benchmark.robosuite.xarm_transfer.runtime import (
-    FrankaPandaSourceRuntime,
     build_source_environment_metadata,
     build_target_environment_metadata,
-    create_xarm_target_environment,
 )
 from mirage.benchmark.robosuite.xarm_transfer.simulation_transform import (
     SimulationTransform,
@@ -162,24 +160,16 @@ def test_low_dim_contract_uses_shapes_when_camera_metadata_is_stale(task_name):
     assert source["env_kwargs"]["has_offscreen_renderer"] is False
 
 
-@pytest.mark.parametrize(
-    "task_name, observation_mode",
-    (
-        ("PickPlaceCan", ObservationMode.IMAGE_NO_PROPRIO),
-        ("Lift", ObservationMode.IMAGE_PROPRIO),
-        ("ThreePieceAssembly_D0", ObservationMode.IMAGE_NO_PROPRIO),
-    ),
-)
-def test_image_runtime_fails_before_simulator_creation(task_name, observation_mode):
-    checkpoint_path = CHECKPOINTS[(task_name, observation_mode)]
-    for factory in (
-        create_xarm_target_environment,
-        FrankaPandaSourceRuntime.from_checkpoint,
-    ):
-        with pytest.raises(
-            RuntimeContractError, match="image observation runtime not implemented"
-        ):
-            factory(checkpoint_path)
+@pytest.mark.parametrize("observation_mode", tuple(ObservationMode)[1:])
+def test_image_runtime_contract_resolves_agentview(observation_mode):
+    contract = resolve_checkpoint_contract(
+        checkpoint("PickPlaceCan", observation_mode)
+    )
+
+    contract.require_runtime_supported()
+
+    assert contract.image_observation_key == "agentview_image"
+    assert contract.camera_name == "agentview"
 
 
 def test_source_and_target_camera_metadata_are_separate():
@@ -192,7 +182,8 @@ def test_source_and_target_camera_metadata_are_separate():
     assert source["env_kwargs"]["use_camera_obs"] is True
     assert source["env_kwargs"]["has_offscreen_renderer"] is True
     assert target["env_kwargs"]["use_camera_obs"] is False
-    assert target["env_kwargs"]["has_offscreen_renderer"] is False
+    assert target["env_kwargs"]["has_offscreen_renderer"] is True
+    assert target["env_kwargs"]["camera_names"] == ["agentview"]
     assert target["env_kwargs"]["robots"] == ["XArm7"]
 
     low_dim_data = checkpoint("PickPlaceCan", ObservationMode.LOW_DIM)

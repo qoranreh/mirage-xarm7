@@ -7,10 +7,13 @@ import pytest
 import torch
 
 from mirage.benchmark.robosuite.xarm_transfer.runtime import (
+    SOURCE_FRAME_ID,
+    FrankaPandaSourceRuntime,
     RobosuiteXArmAbsoluteAdapter,
     RuntimeContractError,
     validate_pick_place_can_checkpoint_contract,
 )
+from mirage.benchmark.robosuite.xarm_transfer.contracts import CartesianPose
 from mirage.benchmark.robosuite.xarm_transfer.profiles import TASK_PROFILES
 
 
@@ -31,6 +34,47 @@ def test_checkpoint_is_exact_franka_panda_osc_pose_contract():
     validate_pick_place_can_checkpoint_contract(
         data["env_metadata"], data["shape_metadata"]
     )
+
+
+def test_source_absolute_osc_alignment_holds_gripper_at_zero_and_restores_delta():
+    runtime = object.__new__(FrankaPandaSourceRuntime)
+    runtime.robot = SimpleNamespace(
+        controller=SimpleNamespace(use_delta=True)
+    )
+    desired = CartesianPose(
+        (0.01, 0.0, 0.8),
+        (0.0, 0.0, 0.0, 1.0),
+        SOURCE_FRAME_ID,
+        2,
+    )
+    pose = CartesianPose(
+        (0.0, 0.0, 0.8),
+        (0.0, 0.0, 0.0, 1.0),
+        SOURCE_FRAME_ID,
+        1,
+    )
+    actions = []
+
+    def step(action):
+        nonlocal pose
+        actions.append(np.asarray(action).copy())
+        pose = desired
+        return {}, 0.0, False, {}
+
+    runtime.environment = SimpleNamespace(step=step)
+    runtime.read_pose = lambda: pose
+    runtime._refresh_observation = lambda: None
+    runtime.observation = {}
+
+    position_error, orientation_error, iterations = (
+        FrankaPandaSourceRuntime.align_to_pose(runtime, desired)
+    )
+
+    assert iterations == 1
+    assert position_error == pytest.approx(0.0)
+    assert orientation_error == pytest.approx(0.0)
+    assert actions[0][-1] == 0.0
+    assert runtime.robot.controller.use_delta is True
 
 
 @pytest.mark.parametrize(

@@ -36,6 +36,9 @@ class AbsoluteCartesianAdapter(Protocol):
     def step_absolute(self, action: np.ndarray) -> object:
         """Advance the simulator using [xyz, absolute rotvec, gripper]."""
 
+    def apply_gripper_command_once(self, normalized_command: float) -> None:
+        """Advance the incremental gripper target once without stepping physics."""
+
     def has_gripper_task_object_contact(self) -> bool:
         """Return whether the simulated gripper touches a task object."""
 
@@ -212,6 +215,7 @@ class BlockingControlResult:
     latency_sec: float
     contact_tolerance_used: bool = False
     task_succeeded: bool = False
+    gripper_apply_count: int = 0
 
     def __post_init__(self) -> None:
         if self.succeeded and (
@@ -228,6 +232,14 @@ class BlockingControlResult:
             raise ControlError("contact_tolerance_used must be a bool")
         if type(self.task_succeeded) is not bool:
             raise ControlError("task_succeeded must be a bool")
+        if type(self.gripper_apply_count) is not int or self.gripper_apply_count < 0:
+            raise ControlError("gripper_apply_count must be a non-negative integer")
+        if self.gripper_apply_count > 1:
+            raise ControlError("gripper may be applied at most once per policy step")
+        if self.succeeded and self.gripper_apply_count != 1:
+            raise ControlError("successful policy step must apply gripper exactly once")
+        if not self.succeeded and self.gripper_apply_count != 0:
+            raise ControlError("failed policy step must not apply a new gripper target")
         if self.contact_tolerance_used and not self.succeeded:
             raise ControlError("contact tolerance can only be used for success")
         if self.task_succeeded and not self.succeeded:
@@ -492,13 +504,18 @@ class AbsoluteBlockingController:
                 max(0.0, self.monotonic() - started),
             )
 
-        target_gripper = np.asarray(
-            [self.gripper_mapper.map(desired.gripper_normalized)],
-            dtype=np.float64,
-        )
-
+        target_gripper = self.gripper_mapper.map(desired.gripper_normalized)
         absolute_mode_set = False
+        gripper_applied = False
+        contact_tolerance_used = False
+        if (
+            position_error <= self.position_tolerance_m
+            and orientation_error <= self.orientation_tolerance_rad
+        ):
+            strict_tolerance_streak = 1
+
         while iterations < self.max_iterations:
+            gripper_applied_this_iteration = False
             elapsed = self.monotonic() - started
             if elapsed >= self.timeout_sec:
                 return BlockingControlResult(
@@ -534,15 +551,57 @@ class AbsoluteBlockingController:
                     max(0.0, self.monotonic() - started),
                 )
 
-            # Always execute at least once so a gripper-only command is applied.
+            strict_ready = (
+                position_error <= self.position_tolerance_m
+                and orientation_error <= self.orientation_tolerance_rad
+                and strict_tolerance_streak > self.settling_iterations
+            )
+            contact_ready = (
+                not strict_ready
+                and self._contact_tolerance_is_met(
+                    position_error_m=position_error,
+                    orientation_error_rad=orientation_error,
+                )
+            )
+            pose_ready = strict_ready or contact_ready
+            if gripper_applied and pose_ready:
+                return BlockingControlResult(
+                    True,
+                    iterations,
+                    False,
+                    False,
+                    None,
+                    position_error,
+                    orientation_error,
+                    max(0.0, self.monotonic() - started),
+                    contact_tolerance_used or contact_ready,
+                    False,
+                    1,
+                )
+            if pose_ready and not gripper_applied:
+                apply_once = getattr(
+                    self.adapter, "apply_gripper_command_once", None
+                )
+                if not callable(apply_once):
+                    raise ControlError(
+                        "target adapter cannot apply a one-shot gripper command"
+                    )
+                apply_once(target_gripper)
+                gripper_applied = True
+                gripper_applied_this_iteration = True
+                contact_tolerance_used = contact_ready
+
             if not absolute_mode_set:
                 self.adapter.set_absolute_mode()
                 absolute_mode_set = True
+            # Every Cartesian / settling physics step holds the already-set
+            # actuator target with zero input. This prevents XArm7Gripper from
+            # integrating the same sign once per physics tick.
             target_action = np.concatenate(
                 (
                     np.asarray(command_desired.pose.position_m, dtype=np.float64),
                     quaternion_to_rotvec(command_desired.pose.quaternion_xyzw),
-                    target_gripper,
+                    np.zeros(1, dtype=np.float64),
                 )
             )
             if target_action.shape != (7,) or not np.all(np.isfinite(target_action)):
@@ -554,7 +613,7 @@ class AbsoluteBlockingController:
                 current, desired.pose
             )
             task_checker = getattr(self.adapter, "task_succeeded", None)
-            if callable(task_checker):
+            if gripper_applied and callable(task_checker):
                 task_succeeded = task_checker()
                 if type(task_succeeded) is not bool:
                     raise ControlError("target task success check must return a bool")
@@ -570,35 +629,14 @@ class AbsoluteBlockingController:
                         max(0.0, self.monotonic() - started),
                         False,
                         True,
+                        1,
                     )
-            if (
-                position_error <= self.position_tolerance_m
-                and orientation_error <= self.orientation_tolerance_rad
-            ):
-                strict_tolerance_streak += 1
-                if strict_tolerance_streak > self.settling_iterations:
-                    return BlockingControlResult(
-                        True,
-                        iterations,
-                        False,
-                        False,
-                        None,
-                        position_error,
-                        orientation_error,
-                        max(0.0, self.monotonic() - started),
-                    )
-            else:
-                strict_tolerance_streak = 0
-            if (
-                (
-                    position_error > self.position_tolerance_m
-                    or orientation_error > self.orientation_tolerance_rad
-                )
-                and self._contact_tolerance_is_met(
-                    position_error_m=position_error,
-                    orientation_error_rad=orientation_error,
-                )
-            ):
+            if gripper_applied_this_iteration:
+                # The arm was inside an accepted pose bound before the command
+                # was issued. One zero-gripper physics step advances the new
+                # actuator target without integrating it again; any residual
+                # pose drift is recorded but does not turn an already-applied
+                # policy command into a fail-closed contradiction.
                 return BlockingControlResult(
                     True,
                     iterations,
@@ -608,8 +646,17 @@ class AbsoluteBlockingController:
                     position_error,
                     orientation_error,
                     max(0.0, self.monotonic() - started),
-                    True,
+                    contact_tolerance_used,
+                    False,
+                    1,
                 )
+            if (
+                position_error <= self.position_tolerance_m
+                and orientation_error <= self.orientation_tolerance_rad
+            ):
+                strict_tolerance_streak += 1
+            else:
+                strict_tolerance_streak = 0
 
         return BlockingControlResult(
             False,

@@ -183,6 +183,7 @@ class FakeAdapter:
         self.joints = np.zeros(7)
         self.absolute_mode_calls = 0
         self.actions = []
+        self.gripper_commands = []
         self.converge = converge
         self.contact = contact
         self.contact_residual_m = contact_residual_m
@@ -218,6 +219,9 @@ class FakeAdapter:
             ) / 2.0
             self.pose = target_pose(tuple(position))
 
+    def apply_gripper_command_once(self, normalized_command):
+        self.gripper_commands.append(float(normalized_command))
+
 
 def test_blocking_controller_repeats_absolute_target_and_records_errors():
     adapter = FakeAdapter()
@@ -243,7 +247,9 @@ def test_blocking_controller_repeats_absolute_target_and_records_errors():
     assert len(adapter.actions) == result.iterations
     for action in adapter.actions:
         np.testing.assert_allclose(action[:3], (0.1, 0.0, 0.8))
-        assert action[-1] == 1.0
+        assert action[-1] == 0.0
+    assert adapter.gripper_commands == [1.0]
+    assert result.gripper_apply_count == 1
 
 
 def test_blocking_controller_requires_consecutive_settling_iterations():
@@ -264,7 +270,7 @@ def test_blocking_controller_requires_consecutive_settling_iterations():
     )
 
     assert result.succeeded
-    assert result.iterations == 7
+    assert result.iterations == 8
     assert result.position_error_m < 0.004
 
 
@@ -424,8 +430,8 @@ def test_contact_tolerance_can_accept_orientation_only_residual():
     assert result.orientation_error_rad == pytest.approx(0.015)
 
 
-def test_blocking_controller_stops_immediately_on_target_task_success():
-    adapter = FakeAdapter(converge=False, task_success=True)
+def test_blocking_controller_checks_task_success_after_alignment_and_gripper():
+    adapter = FakeAdapter(converge=True, task_success=True)
     controller = AbsoluteBlockingController(
         adapter=adapter,
         safety_filter=SimulationSafetyFilter(safety_limits()),
@@ -443,7 +449,8 @@ def test_blocking_controller_stops_immediately_on_target_task_success():
 
     assert result.succeeded
     assert result.task_succeeded
-    assert result.iterations == 1
+    assert result.iterations > 1
+    assert adapter.gripper_commands == [1.0]
 
 
 def test_blocking_controller_reports_timeout_without_sending_after_deadline():
@@ -464,6 +471,7 @@ def test_blocking_controller_reports_timeout_without_sending_after_deadline():
     assert result.timed_out
     assert result.iterations == 0
     assert adapter.actions == []
+    assert adapter.gripper_commands == []
 
 
 def test_blocking_controller_reports_iteration_limit_as_failure():
@@ -485,3 +493,4 @@ def test_blocking_controller_reports_iteration_limit_as_failure():
     assert not result.timed_out
     assert result.iteration_limit_reached
     assert result.iterations == 2
+    assert adapter.gripper_commands == []

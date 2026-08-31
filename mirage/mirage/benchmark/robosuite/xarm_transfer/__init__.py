@@ -11,6 +11,13 @@ from .contracts import (
     SourceAction,
     SourceDesiredPose,
 )
+from .cross_painting import (
+    CrossPainter,
+    CrossPaintingConfig,
+    CrossPaintingError,
+    CrossPaintingInput,
+    CrossPaintingResult,
+)
 from .dynamics import (
     ForwardDynamics,
     ForwardDynamicsError,
@@ -23,12 +30,11 @@ from .factory import (
     ForwardDynamicsConfigError,
     create_forward_dynamics,
 )
-from .simulation_transform import (
-    SimulationTaskFrameTransform,
-    SimulationToolFrameCorrection,
-    SimulationTransform,
-    SimulationTransformError,
-    TargetDesiredPose,
+from .image_runtime import (
+    CrossPaintSourceStep,
+    CrossPaintSourceWorker,
+    CrossPaintStepDiagnostics,
+    ImageRuntimeError,
 )
 from .profiles import (
     BlockingControllerProfile,
@@ -40,10 +46,19 @@ from .profiles import (
 )
 from .runtime import (
     FrankaPandaSourceRuntime,
+    GripperApertureState,
+    ManipulatedObjectState,
     RobosuiteXArmAbsoluteAdapter,
     create_default_xarm_blocking_controller,
     create_xarm_target_environment,
     load_checkpoint_contract,
+)
+from .simulation_transform import (
+    SimulationTaskFrameTransform,
+    SimulationToolFrameCorrection,
+    SimulationTransform,
+    SimulationTransformError,
+    TargetDesiredPose,
 )
 
 __all__ = [
@@ -54,6 +69,14 @@ __all__ = [
     "CartesianPose",
     "BlockingControllerProfile",
     "CheckpointContract",
+    "CrossPainter",
+    "CrossPaintingConfig",
+    "CrossPaintingError",
+    "CrossPaintingInput",
+    "CrossPaintingResult",
+    "CrossPaintSourceStep",
+    "CrossPaintSourceWorker",
+    "CrossPaintStepDiagnostics",
     "ForwardDynamics",
     "ForwardDynamicsConfig",
     "ForwardDynamicsConfigError",
@@ -61,9 +84,12 @@ __all__ = [
     "ForwardDynamicsRequest",
     "ForwardDynamicsResult",
     "FrankaPandaSourceRuntime",
+    "GripperApertureState",
+    "ImageRuntimeError",
     "OscActionScaler",
     "ObservationMode",
     "PandaOnlineOracle",
+    "ManipulatedObjectState",
     "RobosuiteXArmAbsoluteAdapter",
     "ScaledOscCommand",
     "SourceAction",
