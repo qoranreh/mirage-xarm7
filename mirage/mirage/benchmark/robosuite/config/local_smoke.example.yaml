@@ -1,0 +1,31 @@
+# Portable low-dimensional smoke test.
+# Run from mirage/mirage/benchmark/robosuite after copying this file to
+# local_smoke.yaml and adjusting any machine-specific paths if needed.
+source_agent_path: "../../models/can/low_dim/model_epoch_250_PickPlaceCan_success_1.0.pth"
+target_agent_path: "../../models/can/low_dim/model_epoch_250_PickPlaceCan_success_1.0.pth"
+
+n_rollouts: 1
+horizon: 50
+seed: 0
+
+passive: true
+connection: true
+naive: false
+
+source_robot_name: "Panda"
+target_robot_name: "UR5e"
+
+source_tracking_error_threshold: 0.015
+source_num_iter_max: 300
+target_tracking_error_threshold: 0.015
+target_num_iter_max: 300
+delta_action: false
+
+enable_inpainting: false
+use_ros: false
+offline_eval: false
+use_diffusion: false
+diffusion_input_type: ""
+
+device: "cuda"
+results_folder: "results/local_smoke_gpu"

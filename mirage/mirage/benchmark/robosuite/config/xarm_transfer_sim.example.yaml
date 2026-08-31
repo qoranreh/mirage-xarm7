@@ -1,0 +1,76 @@
+version: 2
+scope: simulation_only
+
+# Task and observation mode are resolved from checkpoint metadata. Controller
+# values come only from the reviewed static Python registry in
+# xarm_transfer/profiles.py; this YAML cannot override tolerances or gains.
+checkpoint_contract:
+  registered_tasks:
+    [PickPlaceCan, Lift, Square_D0, Stack_D0, ThreePieceAssembly_D0]
+  runtime_observation_modes: [low_dim]
+  classified_but_not_executable_modes: [image_no_proprio, image_proprio]
+  native_horizon_from_checkpoint: true
+  action_dimension: 7
+  policy_rate_hz: 20
+  controller: OSC_POSE
+  control_delta: true
+  position_scale_m: [0.05, 0.05, 0.05]
+  orientation_scale_rad: [0.5, 0.5, 0.5]
+
+source:
+  embodiment: franka_emika_panda
+  robosuite_robot_id: Panda
+  frame_id: panda_sim_world
+  low_dim_policy_cameras_disabled: true
+  gripper_state_source: simulator_qpos
+
+target:
+  embodiment: xarm7
+  robosuite_robot_id: XArm7
+  frame_id: xarm7_sim_world
+  controller: OSC_POSE
+  absolute_blocking: true
+  policy_cameras_inherited: false
+  controller_profile_source: static_task_registry
+
+simulation_transform:
+  version: 2
+  kind: simulation_only
+  calibrated: false
+  shared_task_world_identity: true
+  tool_frame_correction:
+    source_tool_frame: panda_grip_site
+    target_tool_frame: xarm7_grip_site
+    translation_m: [0.0, 0.0, 0.0]
+    rotation_xyzw: [0.0, 0.0, -0.7071067811865476, 0.7071067811865476]
+    provenance: nominal_panda_to_xarm7_grip_axis
+
+safety:
+  workspace_min_m: [-0.65, -0.60, 0.40]
+  workspace_max_m: [0.35, 0.60, 1.35]
+  joint_limits_from_model: true
+  joint_limit_margin_rad: 0.01
+  max_command_age_sec: 0.15
+  max_future_skew_sec: 0.02
+  max_prediction_position_error_m: 0.03
+  max_prediction_orientation_error_rad: 0.17453292519943295
+
+forward_dynamics:
+  mode: online_oracle
+  # learned_ridge artifacts are currently PickPlaceCan / low_dim only and must
+  # match the checkpoint's task and observation mode.
+  # mode: learned_ridge
+  # model_path: results/xarm_transfer/pick-place-can/low_dim/ridge_forward_dynamics.npz
+
+rollout:
+  seeds: [0, 1, 3, 7]
+  # Omit CLI --steps to use the checkpoint-native horizon (400 for all profiles
+  # except ThreePieceAssembly_D0, which uses 500). A smaller explicit value is
+  # a smoke-test override.
+  steps: checkpoint_native
+  terminate_on_target_success: true
+  default_result_root: results/xarm_transfer/<task-slug>/<observation-mode>/
+
+hardware:
+  enabled: false
+  ros_commands_allowed: false

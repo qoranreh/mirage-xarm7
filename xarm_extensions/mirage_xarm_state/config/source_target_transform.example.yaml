@@ -1,0 +1,7 @@
+version: 1
+# Replace the placeholder values with measured T_TS before setting this true.
+calibrated: false
+source_frame: panda_sim_world
+target_frame: link_base
+translation_m: [0.0, 0.0, 0.0]
+rotation_xyzw: [0.0, 0.0, 0.0, 1.0]

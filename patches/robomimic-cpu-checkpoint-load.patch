@@ -1,0 +1,17 @@
+diff --git a/robomimic/utils/file_utils.py b/robomimic/utils/file_utils.py
+index 3b3a537..c1868d5 100644
+--- a/robomimic/utils/file_utils.py
++++ b/robomimic/utils/file_utils.py
+@@ -180,8 +180,8 @@ def load_dict_from_checkpoint(ckpt_path):
+         ckpt_dict (dict): Loaded checkpoint dictionary.
+     """
+     ckpt_path = os.path.expanduser(ckpt_path)
+-    if not torch.cuda.is_available():
+-        ckpt_dict = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
+-    else:
+-        ckpt_dict = torch.load(ckpt_path, map_location='cuda:4')
++    # Load checkpoint tensors on CPU first. The policy constructor below moves
++    # the model to the caller-selected device, and hard-coding a CUDA index here
++    # breaks single-GPU systems (the original code assumed cuda:4 existed).
++    ckpt_dict = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+     return ckpt_dict
