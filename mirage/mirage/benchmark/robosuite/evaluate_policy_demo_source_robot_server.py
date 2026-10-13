@@ -176,6 +176,11 @@ class Robot:
             self.total_samples = 0
         
         self.prev_action = None
+        self.blocking_kp_scale = 1.0  # Table VI: blocking 제어 kp 배율 (client --kp_scale 로 설정)
+        # Table VI proprio z-offset [m] (client --proprio_z_offset). 실로봇에서 proprio 가 +b 만큼 틀리면 pose 서보는
+        # 물리적으로 goal-b 에 머물면서 goal 에 도달했다고 보고한다. sim 의 OSC 는 참 상태로 서보하므로
+        # (명령 z -= b, 측정 z += b) 로 같은 효과를 만든다. 소스 로봇은 항상 0.
+        self.proprio_z_offset = 0.0
 
         # set seed
         if self.seed is not None:
@@ -214,6 +219,7 @@ class Robot:
                 assert len(target_pose) == 7, "Target pose should be 7DOF"
                 action = np.zeros(7)
                 action[:3] = target_pose[:3]
+                action[2] -= self.proprio_z_offset  # 물리 명령은 goal-b (측정 +b 와 상쇄되어 수렴)
                 action[3:6] = T.quat2axisangle(target_pose[3:])
             else:
                 assert len(target_pose) == 14, "Target pose should be 14DOF"
@@ -252,6 +258,8 @@ class Robot:
             rot = np.array(T.mat2quat(self.core_env.sim.data.site_xmat[self.core_env.sim.model.site_name2id(self.eef_site_name[i])].reshape([3, 3])))
             pose.append(np.concatenate((pos, rot)))
         pose = np.concatenate(pose)
+        if self.proprio_z_offset:
+            pose = pose.copy(); pose[2] += self.proprio_z_offset  # 편향된 proprio (추종 오차 계산·소스로 보내는 robot_pose 에 반영)
         return pose
 
 
@@ -312,12 +320,13 @@ class Robot:
                 assert (len(action) == 8 and self.num_robots == 1) or (len(action) == 16 and self.num_robots == 2), "Action should be 8DOF"
                 for i in range(self.num_robots):
                     self.core_env.robots[i].controller.use_delta = False
-                    self.core_env.robots[i].controller.kp = np.array([150, 150, 150, 150, 150, 150]) # control gain
+                    self.core_env.robots[i].controller.kp = np.array([150, 150, 150, 150, 150, 150]) * self.blocking_kp_scale # control gain (x kp_scale)
                     # self.core_env.robots[i].controller.kp = np.array([100, 100, 500, 10, 10, 50]) # control gain
                     print("Robot {} controller kp: {}".format(i, self.core_env.robots[i].controller.kp))
                 if self.num_robots == 1:
                     action_target = np.zeros(7)
                     action_target[:3] = action[:3]
+                    action_target[2] -= self.proprio_z_offset  # 물리 명령은 goal-b
                     action_target[3:6] = T.quat2axisangle(action[3:7])
                     action_target[-1] = self.prev_action[-1]
                 elif self.num_robots == 2:
@@ -710,14 +719,13 @@ class SourceRobot(Robot):
                 target_img = np.load(f"{self.save_stats_path}/naive_input.npy", allow_pickle=True)
                 obs_copy = deepcopy(obs)
                 obs_copy["agentview_image"] = target_img
-                
-                agentview_img_new = obs_copy["agentview_image"][0]
-                agentview_img_new = agentview_img_new.transpose(1, 2, 0)
-                cv2.imwrite(f"{self.save_stats_path}/naive_input_1.png", cv2.cvtColor(agentview_img_new, cv2.COLOR_RGB2BGR) * 255)
 
-                agentview_img_new = obs_copy["agentview_image"][1]
-                agentview_img_new = agentview_img_new.transpose(1, 2, 0)
-                cv2.imwrite(f"{self.save_stats_path}/naive_input_2.png", cv2.cvtColor(agentview_img_new, cv2.COLOR_RGB2BGR) * 255)
+                # 디버그용 PNG. 원본은 frame-stack 된 [2,3,H,W] 를 가정했지만, 이 포크는 frame-stack 을 정책 안에서
+                # 처리하므로 [3,H,W] 도 올 수 있다 (10/1).
+                frames = target_img if target_img.ndim == 4 else target_img[None]
+                for fi, fr in enumerate(frames):
+                    agentview_img_new = fr.transpose(1, 2, 0)
+                    cv2.imwrite(f"{self.save_stats_path}/naive_input_{fi + 1}.png", cv2.cvtColor(agentview_img_new, cv2.COLOR_RGB2BGR) * 255)
 
                 action = self.policy(ob=obs_copy)
                 print("Action_Diff:", action - gt_action, np.linalg.norm(action - gt_action))

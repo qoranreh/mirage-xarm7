@@ -1,0 +1,250 @@
+{
+  "robot": "XArm7",
+  "gripper": "XArmGripper",
+  "controller": "OSC_POSE",
+  "gl_backend": "osmesa",
+  "robosuite": "1.4.1",
+  "seed": 0,
+  "obs_keys": {
+    "agentview_image": {
+      "shape": "(84,",
+      "dtype": "84,"
+    },
+    "agentview_segmentation_class": {
+      "shape": "(84,",
+      "dtype": "84,"
+    },
+    "agentview_segmentation_element": {
+      "shape": "(84,",
+      "dtype": "84,"
+    },
+    "agentview_segmentation_instance": {
+      "shape": "(84,",
+      "dtype": "84,"
+    },
+    "agentview_segmentation_robot_only": {
+      "shape": "(84,",
+      "dtype": "84,"
+    },
+    "cube_pos": {
+      "shape": "(3,)",
+      "dtype": "float64"
+    },
+    "cube_quat": {
+      "shape": "(4,)",
+      "dtype": "float64"
+    },
+    "gripper_to_cube_pos": {
+      "shape": "(3,)",
+      "dtype": "float64"
+    },
+    "object-state": {
+      "shape": "(10,)",
+      "dtype": "float64"
+    },
+    "robot0_eef_pos": {
+      "shape": "(3,)",
+      "dtype": "float64"
+    },
+    "robot0_eef_quat": {
+      "shape": "(4,)",
+      "dtype": "float64"
+    },
+    "robot0_gripper_qpos": {
+      "shape": "(6,)",
+      "dtype": "float64"
+    },
+    "robot0_gripper_qvel": {
+      "shape": "(6,)",
+      "dtype": "float64"
+    },
+    "robot0_joint_pos": {
+      "shape": "(7,)",
+      "dtype": "float64"
+    },
+    "robot0_joint_pos_cos": {
+      "shape": "(7,)",
+      "dtype": "float64"
+    },
+    "robot0_joint_pos_sin": {
+      "shape": "(7,)",
+      "dtype": "float64"
+    },
+    "robot0_joint_vel": {
+      "shape": "(7,)",
+      "dtype": "float64"
+    },
+    "robot0_proprio-state": {
+      "shape": "(47,)",
+      "dtype": "float64"
+    }
+  },
+  "segmentations": {
+    "instance": {
+      "key": "agentview_segmentation_instance",
+      "unique": [
+        {
+          "id": 0,
+          "name": "cube",
+          "pixels": 6514,
+          "robot": false
+        },
+        {
+          "id": 1,
+          "name": "XArm70",
+          "pixels": 1,
+          "robot": true
+        },
+        {
+          "id": 2,
+          "name": "RethinkMount0",
+          "pixels": 262,
+          "robot": false
+        },
+        {
+          "id": 3,
+          "name": "XArmGripper0",
+          "pixels": 279,
+          "robot": true
+        }
+      ],
+      "robot_pixels": 280,
+      "total": 7056
+    },
+    "class": {
+      "key": "agentview_segmentation_class",
+      "unique": [
+        {
+          "id": 0,
+          "name": "BoxObject",
+          "pixels": 6514,
+          "robot": false
+        },
+        {
+          "id": 1,
+          "name": "XArm7",
+          "pixels": 1,
+          "robot": true
+        },
+        {
+          "id": 2,
+          "name": "RethinkMount",
+          "pixels": 262,
+          "robot": false
+        },
+        {
+          "id": 3,
+          "name": "XArmGripper",
+          "pixels": 279,
+          "robot": true
+        }
+      ],
+      "robot_pixels": 280,
+      "total": 7056
+    },
+    "element": {
+      "key": "agentview_segmentation_element",
+      "unique": [
+        {
+          "id": 0,
+          "name": "floor",
+          "pixels": 364,
+          "robot": false
+        },
+        {
+          "id": 5,
+          "name": "wall_rear_visual",
+          "pixels": 617,
+          "robot": false
+        },
+        {
+          "id": 8,
+          "name": "table_visual",
+          "pixels": 5469,
+          "robot": false
+        },
+        {
+          "id": 13,
+          "name": "robot0_link_base_visual",
+          "pixels": 1,
+          "robot": true
+        },
+        {
+          "id": 30,
+          "name": "gripper0_hand_visual",
+          "pixels": 169,
+          "robot": true
+        },
+        {
+          "id": 32,
+          "name": "gripper0_left_outer_knuckle_visual",
+          "pixels": 19,
+          "robot": true
+        },
+        {
+          "id": 34,
+          "name": "gripper0_left_finger_visual",
+          "pixels": 26,
+          "robot": true
+        },
+        {
+          "id": 37,
+          "name": "gripper0_left_inner_knuckle_visual",
+          "pixels": 8,
+          "robot": true
+        },
+        {
+          "id": 39,
+          "name": "gripper0_right_outer_knuckle_visual",
+          "pixels": 23,
+          "robot": true
+        },
+        {
+          "id": 41,
+          "name": "gripper0_right_finger_visual",
+          "pixels": 23,
+          "robot": true
+        },
+        {
+          "id": 44,
+          "name": "gripper0_right_inner_knuckle_visual",
+          "pixels": 11,
+          "robot": true
+        },
+        {
+          "id": 49,
+          "name": "mount0_pedestal_vis",
+          "pixels": 262,
+          "robot": false
+        },
+        {
+          "id": 52,
+          "name": "cube_g0_vis",
+          "pixels": 64,
+          "robot": false
+        }
+      ],
+      "robot_pixels": 280,
+      "total": 7056
+    },
+    "robot_only": {
+      "key": "agentview_segmentation_robot_only",
+      "unique": [
+        {
+          "id": 0,
+          "name": "other",
+          "pixels": 6776,
+          "robot": false
+        },
+        {
+          "id": 1,
+          "name": "robot+gripper",
+          "pixels": 280,
+          "robot": true
+        }
+      ],
+      "robot_pixels": 280,
+      "total": 7056
+    }
+  }
+}

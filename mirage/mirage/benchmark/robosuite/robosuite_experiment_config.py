@@ -54,6 +54,10 @@ class ExperimentRobotsuiteConfig(ExperimentConfig):
     # Optional device for evaluation
     device: Optional[str] = None
 
+    # Optional Table VI knobs for the target robot (only passed to the client when set)
+    target_kp_scale: Optional[float] = None
+    target_proprio_z_offset: Optional[float] = None
+
     def validate_config(self):
         """
         Validates the configuration to see if the values are feasible.
@@ -111,6 +115,8 @@ class ExperimentRobotsuiteConfig(ExperimentConfig):
         table.add_row(["Target Gripper Type", self.target_gripper_type])
         table.add_row(["Results Folder", self.results_folder])
         table.add_row(["Device", self.device])
+        table.add_row(["Target kp Scale", self.target_kp_scale])
+        table.add_row(["Target Proprio z Offset", self.target_proprio_z_offset])
         return table.get_formatted_string()
     
     @staticmethod
@@ -147,5 +153,7 @@ class ExperimentRobotsuiteConfig(ExperimentConfig):
                 target_video_path=config.get("target_video_path"),
                 source_gripper_type=config.get("source_gripper_type"),
                 target_gripper_type=config.get("target_gripper_type"),
-                device=config.get("device", "cuda")
+                device=config.get("device", "cuda"),
+                target_kp_scale=config.get("target_kp_scale"),
+                target_proprio_z_offset=config.get("target_proprio_z_offset"),
             )

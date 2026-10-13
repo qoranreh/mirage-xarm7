@@ -1,0 +1,226 @@
+{
+  "robot": "Panda",
+  "gripper": "PandaGripper",
+  "controller": "OSC_POSE",
+  "gl_backend": "osmesa",
+  "robosuite": "1.4.1",
+  "seed": 0,
+  "obs_keys": {
+    "agentview_image": {
+      "shape": "(84,",
+      "dtype": "84,"
+    },
+    "agentview_segmentation_class": {
+      "shape": "(84,",
+      "dtype": "84,"
+    },
+    "agentview_segmentation_element": {
+      "shape": "(84,",
+      "dtype": "84,"
+    },
+    "agentview_segmentation_instance": {
+      "shape": "(84,",
+      "dtype": "84,"
+    },
+    "agentview_segmentation_robot_only": {
+      "shape": "(84,",
+      "dtype": "84,"
+    },
+    "cube_pos": {
+      "shape": "(3,)",
+      "dtype": "float64"
+    },
+    "cube_quat": {
+      "shape": "(4,)",
+      "dtype": "float64"
+    },
+    "gripper_to_cube_pos": {
+      "shape": "(3,)",
+      "dtype": "float64"
+    },
+    "object-state": {
+      "shape": "(10,)",
+      "dtype": "float64"
+    },
+    "robot0_eef_pos": {
+      "shape": "(3,)",
+      "dtype": "float64"
+    },
+    "robot0_eef_quat": {
+      "shape": "(4,)",
+      "dtype": "float64"
+    },
+    "robot0_gripper_qpos": {
+      "shape": "(2,)",
+      "dtype": "float64"
+    },
+    "robot0_gripper_qvel": {
+      "shape": "(2,)",
+      "dtype": "float64"
+    },
+    "robot0_joint_pos": {
+      "shape": "(7,)",
+      "dtype": "float64"
+    },
+    "robot0_joint_pos_cos": {
+      "shape": "(7,)",
+      "dtype": "float64"
+    },
+    "robot0_joint_pos_sin": {
+      "shape": "(7,)",
+      "dtype": "float64"
+    },
+    "robot0_joint_vel": {
+      "shape": "(7,)",
+      "dtype": "float64"
+    },
+    "robot0_proprio-state": {
+      "shape": "(39,)",
+      "dtype": "float64"
+    }
+  },
+  "segmentations": {
+    "instance": {
+      "key": "agentview_segmentation_instance",
+      "unique": [
+        {
+          "id": 0,
+          "name": "cube",
+          "pixels": 6479,
+          "robot": false
+        },
+        {
+          "id": 1,
+          "name": "Panda0",
+          "pixels": 4,
+          "robot": true
+        },
+        {
+          "id": 2,
+          "name": "RethinkMount0",
+          "pixels": 196,
+          "robot": false
+        },
+        {
+          "id": 3,
+          "name": "PandaGripper0",
+          "pixels": 377,
+          "robot": true
+        }
+      ],
+      "robot_pixels": 381,
+      "total": 7056
+    },
+    "class": {
+      "key": "agentview_segmentation_class",
+      "unique": [
+        {
+          "id": 0,
+          "name": "BoxObject",
+          "pixels": 6479,
+          "robot": false
+        },
+        {
+          "id": 1,
+          "name": "Panda",
+          "pixels": 4,
+          "robot": true
+        },
+        {
+          "id": 2,
+          "name": "RethinkMount",
+          "pixels": 196,
+          "robot": false
+        },
+        {
+          "id": 3,
+          "name": "PandaGripper",
+          "pixels": 377,
+          "robot": true
+        }
+      ],
+      "robot_pixels": 381,
+      "total": 7056
+    },
+    "element": {
+      "key": "agentview_segmentation_element",
+      "unique": [
+        {
+          "id": 0,
+          "name": "floor",
+          "pixels": 367,
+          "robot": false
+        },
+        {
+          "id": 5,
+          "name": "wall_rear_visual",
+          "pixels": 578,
+          "robot": false
+        },
+        {
+          "id": 8,
+          "name": "table_visual",
+          "pixels": 5470,
+          "robot": false
+        },
+        {
+          "id": 69,
+          "name": "robot0_g49_vis",
+          "pixels": 4,
+          "robot": true
+        },
+        {
+          "id": 71,
+          "name": "gripper0_hand_visual",
+          "pixels": 350,
+          "robot": true
+        },
+        {
+          "id": 73,
+          "name": "gripper0_finger1_visual",
+          "pixels": 11,
+          "robot": true
+        },
+        {
+          "id": 76,
+          "name": "gripper0_finger2_visual",
+          "pixels": 16,
+          "robot": true
+        },
+        {
+          "id": 82,
+          "name": "mount0_pedestal_vis",
+          "pixels": 196,
+          "robot": false
+        },
+        {
+          "id": 85,
+          "name": "cube_g0_vis",
+          "pixels": 64,
+          "robot": false
+        }
+      ],
+      "robot_pixels": 381,
+      "total": 7056
+    },
+    "robot_only": {
+      "key": "agentview_segmentation_robot_only",
+      "unique": [
+        {
+          "id": 0,
+          "name": "other",
+          "pixels": 6675,
+          "robot": false
+        },
+        {
+          "id": 1,
+          "name": "robot+gripper",
+          "pixels": 381,
+          "robot": true
+        }
+      ],
+      "robot_pixels": 381,
+      "total": 7056
+    }
+  }
+}

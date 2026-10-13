@@ -11,7 +11,8 @@ class GripperInterpolator:
     GRIPPER_TYPE_TO_ROBOT_MAPPING = {
         "PandaGripper": "Panda",
         "Robotiq85Gripper": "UR5e",
-        "Robotiq140Gripper": "IIWA"
+        "Robotiq140Gripper": "IIWA",
+        "XArmGripper": "XArm7",
     }
     
     def __init__(self, 

@@ -16,9 +16,13 @@ import robosuite.utils.camera_utils as camera_utils
 from evaluate_policy_demo_source_robot_server import Data, Robot
 
 class TargetRobot(Robot):
-    def __init__(self, robot_name=None, ckpt_path=None, render=False, video_path=None, rollout_horizon=None, seed=None, dataset_path=None, connection=None, port = 50007, passive=False, demo_path=None, inpaint_enabled=False, offline_eval=False, save_paired_images=False, save_paired_images_folder_path=None, use_diffusion=False, use_ros=False, diffusion_input=None, device=None, save_failed_demos=False, gripper_types=None, naive=None, save_stats_path=None):
+    def __init__(self, robot_name=None, ckpt_path=None, render=False, video_path=None, rollout_horizon=None, seed=None, dataset_path=None, connection=None, port = 50007, passive=False, demo_path=None, inpaint_enabled=False, offline_eval=False, save_paired_images=False, save_paired_images_folder_path=None, use_diffusion=False, use_ros=False, diffusion_input=None, device=None, save_failed_demos=False, gripper_types=None, naive=None, save_stats_path=None, kp_scale=1.0, proprio_z_offset=0.0):
         super().__init__(robot_name=robot_name, ckpt_path=ckpt_path, render=render, video_path=video_path, rollout_horizon=rollout_horizon, seed=seed, dataset_path=dataset_path, demo_path=demo_path, inpaint_enabled=inpaint_enabled, save_paired_images=save_paired_images, save_paired_images_folder_path=save_paired_images_folder_path, device=device, save_failed_demos=save_failed_demos, gripper_types=gripper_types, save_stats_path=save_stats_path)
         
+        self.blocking_kp_scale = kp_scale            # Table VI: 컨트롤러 gain 배율 (server Robot.step blocking 분기에서 사용)
+        self.proprio_z_offset = proprio_z_offset     # Table VI: 타깃 proprio z 바이어스 [m] (구현은 Robot.compute_eef_pose/step/drive_robot_to_target_pose)
+        if self.blocking_kp_scale != 1.0 or self.proprio_z_offset:
+            print(f"[TableVI] kp_scale={self.blocking_kp_scale} proprio_z_offset={self.proprio_z_offset}")
         if connection:
             HOST = 'localhost'
             PORT = port
@@ -60,7 +64,10 @@ class TargetRobot(Robot):
 
     def wait_for_skip(self):
         while True:
-            input()
+            try:
+                input()
+            except EOFError:  # stdin 없이(nohup/run_all.sh) 돌릴 때 조용히 종료
+                return
             self.should_kill_early = True
 
     def image_to_pointcloud(self, depth_map, camera_name, camera_height=84, camera_width=84, segmask=None):
@@ -694,6 +701,18 @@ if __name__ == "__main__":
         help="provide the name of the gripper to be used, such as PandaGripper or Robotiq85Gripper"
     )
     parser.add_argument(
+        "--kp_scale",
+        type=float,
+        default=1.0,
+        help="(Table VI) multiply the blocking controller kp (default 150) by this factor",
+    )
+    parser.add_argument(
+        "--proprio_z_offset",
+        type=float,
+        default=0.0,
+        help="(Table VI) bias added to the target robot's proprioceptive EE z position, in meters",
+    )
+    parser.add_argument(
         "--naive",
         action='store_true',
         help="Set this to true to use naive (no inpainting)",
@@ -703,6 +722,6 @@ if __name__ == "__main__":
     
    
     time.sleep(4) # wait for the server to start
-    target_robot = TargetRobot(robot_name=args.robot_name, ckpt_path=args.agent, render=args.render, video_path=args.video_path, rollout_horizon=args.horizon, dataset_path=args.dataset_path, passive=args.passive, port=args.port, connection=args.connection, demo_path=args.demo_path, inpaint_enabled=args.inpaint_enabled, offline_eval=args.offline_eval, save_paired_images=args.save_paired_images, save_paired_images_folder_path=args.save_paired_images_folder_path, use_diffusion=args.use_diffusion, use_ros=args.use_ros, diffusion_input=args.diffusion_input, device=args.device, save_failed_demos=args.save_failed_demos, gripper_types=args.gripper, naive=args.naive, save_stats_path=args.save_stats_path)
+    target_robot = TargetRobot(robot_name=args.robot_name, ckpt_path=args.agent, render=args.render, video_path=args.video_path, rollout_horizon=args.horizon, dataset_path=args.dataset_path, passive=args.passive, port=args.port, connection=args.connection, demo_path=args.demo_path, inpaint_enabled=args.inpaint_enabled, offline_eval=args.offline_eval, save_paired_images=args.save_paired_images, save_paired_images_folder_path=args.save_paired_images_folder_path, use_diffusion=args.use_diffusion, use_ros=args.use_ros, diffusion_input=args.diffusion_input, device=args.device, save_failed_demos=args.save_failed_demos, gripper_types=args.gripper, naive=args.naive, save_stats_path=args.save_stats_path, kp_scale=args.kp_scale, proprio_z_offset=args.proprio_z_offset)
     target_robot.run_experiments(seeds=args.seeds, rollout_num_episodes=args.n_rollouts, video_skip=args.video_skip, camera_names=args.camera_names, dataset_obs=args.dataset_obs, save_stats_path=args.save_stats_path, tracking_error_threshold=args.tracking_error_threshold, num_iter_max=args.num_iter_max, target_robot_delta_action=args.delta_action, inpaint_online_eval=not target_robot.offline_eval)
 
